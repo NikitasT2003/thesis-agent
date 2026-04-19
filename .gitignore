@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+
+# uv
+uv.lock
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Agent runtime data (per-user, never commit)
+data/
+*.sqlite
+*.db
+*.db-journal
+.thread
+
+# User workspace (when repo is cloned and used as the workspace)
+/research/raw/*
+!/research/raw/.gitkeep
+!/research/raw/urls.txt
+/research/wiki/*
+!/research/wiki/.gitkeep
+/style/samples/*
+!/style/samples/.gitkeep
+/style/STYLE.md
+/thesis/chapters/*
+!/thesis/chapters/.gitkeep
+/thesis/outline.md
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# mypy / ruff cache
+.mypy_cache/
+.ruff_cache/
