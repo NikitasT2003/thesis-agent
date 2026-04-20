@@ -172,10 +172,14 @@ def test_models_anthropic_defaults(ws: Path):
 def test_models_openrouter_defaults(ws: Path, monkeypatch):
     monkeypatch.setenv("THESIS_PROVIDER", "openrouter")
     m = models()
-    # OpenRouter format: provider/model
+    # OpenRouter format: `provider/model`.
     assert "/" in m.drafter
     assert "/" in m.researcher
-    assert "haiku" in m.researcher
+    # Defaults chosen for cost: GLM 5.1 for the quality-critical roles,
+    # Gemma 4 31B-IT for the cheap read-only researcher.
+    assert m.drafter == "z-ai/glm-5.1"
+    assert m.curator == "z-ai/glm-5.1"
+    assert m.researcher == "google/gemma-4-31b-it"
 
 
 def test_models_env_overrides_win(ws: Path, monkeypatch):
@@ -231,6 +235,82 @@ def test_make_model_openrouter_passes_attribution_headers(ws: Path, monkeypatch)
     headers = getattr(obj, "default_headers", None) or {}
     assert headers.get("HTTP-Referer") == "https://example.com"
     assert headers.get("X-Title") == "My App"
+
+
+def test_make_model_openrouter_attaches_default_fallback_chain(ws: Path, monkeypatch):
+    """OpenRouter's `models` routing param lets the API fall back to a
+    cheaper / open model when the primary is unavailable. The default
+    chain must put Gemma after the primary."""
+    monkeypatch.setenv("THESIS_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-dummy")
+    obj = make_model("z-ai/glm-5.1")
+    # langchain-openai stores extra_body on the wrapper; the key must be
+    # reachable via model_kwargs or .extra_body (attribute name varies
+    # across versions, so check both).
+    extra = getattr(obj, "extra_body", None) or getattr(obj, "model_kwargs", {}).get("extra_body")
+    assert extra, "extra_body should contain a `models` routing chain"
+    chain = extra.get("models")
+    assert chain and chain[0] == "z-ai/glm-5.1"
+    assert "google/gemma-4-31b-it" in chain
+
+
+def test_make_model_openrouter_custom_fallback(ws: Path, monkeypatch):
+    monkeypatch.setenv("THESIS_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-dummy")
+    monkeypatch.setenv(
+        "THESIS_OPENROUTER_FALLBACK",
+        "meta-llama/llama-3.3-70b-instruct, openai/gpt-4o-mini",
+    )
+    obj = make_model("z-ai/glm-5.1")
+    extra = getattr(obj, "extra_body", None) or getattr(obj, "model_kwargs", {}).get("extra_body")
+    chain = extra.get("models")
+    assert chain == [
+        "z-ai/glm-5.1",
+        "meta-llama/llama-3.3-70b-instruct",
+        "openai/gpt-4o-mini",
+    ]
+
+
+def test_make_model_openrouter_fallback_disabled_with_empty_env(ws: Path, monkeypatch):
+    monkeypatch.setenv("THESIS_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-dummy")
+    monkeypatch.setenv("THESIS_OPENROUTER_FALLBACK", "")
+    obj = make_model("z-ai/glm-5.1")
+    extra = getattr(obj, "extra_body", None) or getattr(obj, "model_kwargs", {}).get("extra_body")
+    # No chain should be attached.
+    assert not extra or not extra.get("models")
+
+
+def test_make_model_openrouter_primary_deduplicated_from_fallback(ws: Path, monkeypatch):
+    """If a user repeats the primary inside their fallback list, it must
+    not appear twice in the chain sent to OpenRouter."""
+    monkeypatch.setenv("THESIS_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-dummy")
+    monkeypatch.setenv(
+        "THESIS_OPENROUTER_FALLBACK",
+        "z-ai/glm-5.1, google/gemma-4-31b-it",
+    )
+    obj = make_model("z-ai/glm-5.1")
+    extra = getattr(obj, "extra_body", None) or getattr(obj, "model_kwargs", {}).get("extra_body")
+    chain = extra.get("models")
+    assert chain.count("z-ai/glm-5.1") == 1
+
+
+def test_openrouter_fallback_chain_helper_honours_env():
+    import os as _os
+
+    from thesis_agent.config import openrouter_fallback_chain
+
+    # Clean slate
+    _os.environ.pop("THESIS_OPENROUTER_FALLBACK", None)
+    assert openrouter_fallback_chain("a/b") == ["a/b", "google/gemma-4-31b-it"]
+    _os.environ["THESIS_OPENROUTER_FALLBACK"] = "x/y"
+    try:
+        assert openrouter_fallback_chain("a/b") == ["a/b", "x/y"]
+        _os.environ["THESIS_OPENROUTER_FALLBACK"] = ""
+        assert openrouter_fallback_chain("a/b") == ["a/b"]
+    finally:
+        _os.environ.pop("THESIS_OPENROUTER_FALLBACK", None)
 
 
 def test_make_model_openrouter_respects_custom_base_url(ws: Path, monkeypatch):

@@ -121,9 +121,19 @@ customise) the agent's operating rules.
   `THESIS_MODEL_CURATOR`, `THESIS_MODEL_RESEARCHER`. Format depends on
   provider:
   - Anthropic → `anthropic:claude-sonnet-4-6`
-  - OpenRouter → `anthropic/claude-sonnet-4-5`, `openai/gpt-4o`,
-    `meta-llama/llama-3.3-70b-instruct`, etc. (browse at
-    [openrouter.ai/models](https://openrouter.ai/models))
+  - OpenRouter → `z-ai/glm-5.1`, `google/gemma-4-31b-it`,
+    `openai/gpt-4o`, `meta-llama/llama-3.3-70b-instruct`, etc.
+    (browse at [openrouter.ai/models](https://openrouter.ai/models))
+  - OpenRouter defaults: drafter + curator use **GLM 5.1**
+    (`z-ai/glm-5.1`, ~$1/M input, 200K context), researcher uses
+    **Gemma 4 31B-IT** (`google/gemma-4-31b-it`, ~$0.13/M input,
+    256K context). Roughly a 3–4× cost drop vs Claude Sonnet while
+    keeping quality-critical roles on a capable frontier model.
+- **Model fallback** (OpenRouter only): `THESIS_OPENROUTER_FALLBACK`
+  is a comma-separated list passed to OpenRouter's `models` routing
+  parameter. Requests automatically fall through the chain on
+  outage, rate limit, or content filter. Default:
+  `google/gemma-4-31b-it`. Set to empty string to disable.
 - **Switch providers**: edit `.env` — set `THESIS_PROVIDER=anthropic` or
   `openrouter` and make sure the matching key is present.
 - **Change the schema**: edit `AGENTS.md`. The whole agent is wired to

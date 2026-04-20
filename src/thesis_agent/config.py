@@ -212,6 +212,16 @@ def load_env(required_api_key: bool = True) -> None:
 
 
 # Default model IDs per provider. Per-role overrides via THESIS_MODEL_* env vars.
+#
+# Rationale for the OpenRouter defaults:
+#   - GLM 5.1 (`z-ai/glm-5.1`): strong long-horizon coding + writing performance,
+#     ~$1 per 1M input tokens — roughly 3x cheaper than Claude Sonnet 4 for the
+#     quality-critical drafter + curator roles.
+#   - Gemma 4 31B IT (`google/gemma-4-31b-it`): ~$0.13 per 1M input, 256K
+#     context, solid instruction-following — great for the researcher role
+#     which only reads and reports with citations.
+# Users who want the old Anthropic-via-OpenRouter mapping can override with
+# THESIS_MODEL_* env vars or pass --provider anthropic.
 _DEFAULTS: dict[str, ModelConfig] = {
     "anthropic": ModelConfig(
         drafter="anthropic:claude-sonnet-4-6",
@@ -219,11 +229,42 @@ _DEFAULTS: dict[str, ModelConfig] = {
         researcher="anthropic:claude-haiku-4-5-20251001",
     ),
     "openrouter": ModelConfig(
-        drafter="anthropic/claude-sonnet-4-5",
-        curator="anthropic/claude-sonnet-4-5",
-        researcher="anthropic/claude-haiku-4-5",
+        drafter="z-ai/glm-5.1",
+        curator="z-ai/glm-5.1",
+        researcher="google/gemma-4-31b-it",
     ),
 }
+
+# Default fallback chain for OpenRouter. OpenRouter's `models` routing param
+# accepts a list of IDs and falls back in order on provider outage / rate
+# limit / content filter. Users can override with THESIS_OPENROUTER_FALLBACK
+# (comma-separated) or disable entirely with THESIS_OPENROUTER_FALLBACK="".
+_OPENROUTER_DEFAULT_FALLBACK: tuple[str, ...] = ("google/gemma-4-31b-it",)
+
+
+def openrouter_fallback_chain(primary: str) -> list[str]:
+    """Return [primary, *unique_fallbacks] for OpenRouter's `models` routing.
+
+    Honours $THESIS_OPENROUTER_FALLBACK (comma-separated). Empty string
+    explicitly disables fallback. The primary is always first, duplicates
+    are removed while preserving order, and the primary is never re-listed
+    later in the chain.
+    """
+    raw = os.environ.get("THESIS_OPENROUTER_FALLBACK")
+    if raw is None:
+        candidates = list(_OPENROUTER_DEFAULT_FALLBACK)
+    elif not raw.strip():
+        candidates = []
+    else:
+        candidates = [m.strip() for m in raw.split(",") if m.strip()]
+
+    chain: list[str] = [primary]
+    seen = {primary}
+    for m in candidates:
+        if m not in seen:
+            chain.append(m)
+            seen.add(m)
+    return chain
 
 
 def models() -> ModelConfig:
@@ -255,12 +296,20 @@ def make_model(model_id: str, *, temperature: float = 0.0):
             headers["X-Title"] = name
         # Strip an "openrouter/" prefix if the user pasted one.
         model_id = model_id.removeprefix("openrouter/")
+        # OpenRouter-specific: use its `models` routing parameter so requests
+        # fall back to a cheaper / open model when the primary is unavailable
+        # (outage, rate limit, content filter). Disabled with empty env var.
+        extra_body: dict = {}
+        chain = openrouter_fallback_chain(model_id)
+        if len(chain) > 1:
+            extra_body["models"] = chain
         return ChatOpenAI(
             api_key=os.environ.get("OPENROUTER_API_KEY"),
             base_url=base_url,
             model=model_id,
             temperature=temperature,
             default_headers=headers or None,
+            extra_body=extra_body or None,
         )
 
     # Default: anthropic / init_chat_model string form.
