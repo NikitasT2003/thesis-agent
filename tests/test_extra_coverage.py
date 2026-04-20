@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from thesis_agent import cli
 from thesis_agent.ingest import extract
 
 runner = CliRunner()
@@ -142,73 +141,8 @@ class TestIngestMainModule:
 
 
 # ---------------------------------------------------------------------------
-# Agent-dispatch CLI commands (curate/style/write/lint) with mocked agent
+# The old curate/style/write/lint commands were removed. The agent now
+# handles those tasks from the chat REPL, picking skills itself. See
+# tests/test_chat_tui.py for the REPL tests and tests/test_agent_e2e.py
+# for scripted-LLM end-to-end coverage of the underlying tool usage.
 # ---------------------------------------------------------------------------
-
-class TestAgentCommands:
-    def _patch_invoke(self, monkeypatch, reply: str = "ok") -> list[tuple[str, str]]:
-        seen: list[tuple[str, str]] = []
-
-        def fake_invoke(prompt: str, *, thread_id: str, p=None):
-            seen.append((prompt, thread_id))
-            return reply
-
-        monkeypatch.setattr("thesis_agent.agent.invoke", fake_invoke)
-        return seen
-
-    def test_curate_dispatches_pending_sources_prompt(self, tmp_path: Path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        runner.invoke(cli.app, ["init"])
-        seen = self._patch_invoke(monkeypatch)
-        result = runner.invoke(cli.app, ["curate"])
-        assert result.exit_code == 0, result.stdout
-        assert len(seen) == 1
-        prompt, _ = seen[0]
-        assert "pending" in prompt.lower()
-        assert "wiki-curator" in prompt.lower() or "curate" in prompt.lower()
-
-    def test_style_dispatches_samples_prompt(self, tmp_path: Path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        runner.invoke(cli.app, ["init"])
-        seen = self._patch_invoke(monkeypatch)
-        result = runner.invoke(cli.app, ["style"])
-        assert result.exit_code == 0, result.stdout
-        assert "style/samples" in seen[0][0]
-        assert "STYLE.md" in seen[0][0]
-
-    def test_write_carries_section_identifier(self, tmp_path: Path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        runner.invoke(cli.app, ["init"])
-        seen = self._patch_invoke(monkeypatch)
-        result = runner.invoke(cli.app, ["write", "2.1"])
-        assert result.exit_code == 0
-        assert "2.1" in seen[0][0]
-
-    def test_lint_specific_file_passed_through(self, tmp_path: Path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        runner.invoke(cli.app, ["init"])
-        target = tmp_path / "thesis" / "chapters" / "02.md"
-        target.write_text("# 02\n", encoding="utf-8")
-        seen = self._patch_invoke(monkeypatch)
-        result = runner.invoke(cli.app, ["lint", str(target)])
-        assert result.exit_code == 0
-        assert str(target) in seen[0][0] or "02.md" in seen[0][0]
-
-    def test_thread_flag_persists_to_file(self, tmp_path: Path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        runner.invoke(cli.app, ["init"])
-        self._patch_invoke(monkeypatch)
-        runner.invoke(cli.app, ["curate", "--thread", "t-777"])
-        assert (tmp_path / "data" / ".thread").read_text(encoding="utf-8").strip() == "t-777"
-
-    def test_agent_error_exits_nonzero(self, tmp_path: Path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        runner.invoke(cli.app, ["init"])
-
-        def raiser(*a, **kw):
-            raise RuntimeError("boom")
-
-        monkeypatch.setattr("thesis_agent.agent.invoke", raiser)
-        result = runner.invoke(cli.app, ["curate"])
-        assert result.exit_code != 0
-        assert "agent error" in result.stdout.lower()

@@ -52,19 +52,51 @@ That's it. Non-technical users can stop reading here.
 
 ## Commands
 
+The interface is deliberately small. Four deterministic utilities and
+one agent REPL. There are no hardcoded agent workflows — the agent picks
+the right skill itself based on what you ask.
+
 | Command | What it does |
 |---|---|
 | `thesis setup` | Interactive first-run wizard (API key, workspace, examples). |
 | `thesis init` | Non-interactive workspace scaffold. |
 | `thesis status` | What's in the workspace (counts, DB sizes, thread id). |
 | `thesis ingest [DIR]` | Normalise PDFs/DOCX/EPUB/MD/URLs → markdown. No LLM. |
-| `thesis style` | Compile `style/STYLE.md` from `style/samples/`. |
-| `thesis curate` | Build wiki pages from `pending` sources. |
-| `thesis write SECTION` | Draft one thesis section. |
-| `thesis lint [FILE]` | Citation + grounding linter over chapters. |
-| `thesis chat [--new]` | Interactive REPL. `/new`, `/quit` control the session. |
+| `thesis chat` | Agent REPL with streaming + slash commands. **This is where you do everything else** — "curate the pending sources", "draft section 2.1", "lint the wiki", "show me what sources disagree about X". |
+| `thesis` (no subcommand) | Alias for `thesis chat`. |
 
-Global flags: `--thread <id>`, `--version`.
+Slash commands inside chat: `/help`, `/new`, `/thread [id]`, `/status`,
+`/model`, `/clear`, `/history [N]`, `/quit`. Input accepts `\` line
+continuation and ` ``` ` fenced blocks.
+
+## What the agent has access to
+
+- **Filesystem** scoped to the workspace (read_file / write_file /
+  edit_file / ls / glob / grep).
+- **Bash** — shell commands run in the workspace root, 60 s timeout by
+  default. Disable with `THESIS_NO_SHELL=1`, tune timeout with
+  `THESIS_SHELL_TIMEOUT_SEC`.
+- **Skills** from `skills/` (ingest-sources, wiki-curator, wiki-linter,
+  thesis-writer, style-learner, citation-linter). The agent triggers
+  the right one based on what you ask.
+- **MCP servers** — any servers listed in `.thesis/mcp.json` (or
+  pointed at via `$THESIS_MCP_CONFIG`) are connected at start. Example:
+
+  ```json
+  {
+    "servers": {
+      "firecrawl": {
+        "command": "npx",
+        "args": ["-y", "firecrawl-mcp"],
+        "transport": "stdio",
+        "env": {"FIRECRAWL_API_KEY": "fc-..."}
+      }
+    }
+  }
+  ```
+- **Memory** — a SQLite-backed long-term store at `data/store.db`
+  routed through the `/memories/` virtual path. Writes persist across
+  chat sessions.
 
 ## How it works
 

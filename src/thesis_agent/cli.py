@@ -873,136 +873,17 @@ def ingest(
 
 
 # ---------------------------------------------------------------------------
-# agent-backed commands
+# chat — the ONLY agent-facing command. No hardcoded workflows.
+#
+# Previously we shipped `thesis curate` / `style` / `write` / `lint` which
+# injected long step-by-step prompts. That was deterministic scaffolding
+# and it fought with what the LLM + skills already know how to do. Now
+# the user opens chat, asks for what they want ("curate the pending
+# sources", "draft section 2.1", "lint the wiki"), and the agent picks
+# the right skill + tools on its own. Skills live in `skills/` and the
+# schema in `AGENTS.md` still define the conventions — the agent just
+# isn't hand-held through them.
 # ---------------------------------------------------------------------------
-
-def _run(prompt: str, thread_id: str) -> None:
-    from thesis_agent.agent import invoke
-
-    try:
-        reply = invoke(prompt, thread_id=thread_id)
-    except Exception as e:
-        console.print(f"[red]agent error:[/] {e}")
-        raise typer.Exit(1) from e
-    console.print(reply)
-
-
-@app.command()
-def curate(
-    thread: str = typer.Option(None, "--thread", help="Thread ID (defaults to persisted)."),
-) -> None:
-    """Delegate to the wiki-curator to build wiki pages from pending sources."""
-    tid = thread or read_thread_id()
-    write_thread_id(tid)
-    _run(
-        "Curate pending sources per AGENTS.md. Steps, in order, each "
-        "done at most once:\n"
-        "1. Read `research/raw/_index.json` to find entries with "
-        "status 'pending'. If none, reply 'nothing to curate' and STOP.\n"
-        "2. For each pending source, read the raw markdown ONCE.\n"
-        "3. For each source, write exactly one file per path:\n"
-        "   - `research/wiki/sources/<filename>.md` (source summary)\n"
-        "   - `research/wiki/entities/<slug>.md` for each distinct entity\n"
-        "   - `research/wiki/concepts/<slug>.md` for each distinct concept\n"
-        "   Use `write_file` for new paths, `edit_file` for paths that "
-        "already exist. Never retry a refused `write_file`; switch to "
-        "`edit_file` with a specific `old_string`.\n"
-        "4. Use `edit_file` once on `research/wiki/index.md` to add new "
-        "entries.\n"
-        "5. Use `edit_file` once on `research/wiki/log.md` to append "
-        "`## [YYYY-MM-DD] ingest | <title>`.\n"
-        "6. Use `edit_file` once on `research/raw/_index.json` to change "
-        "'pending' to 'curated' for each processed source.\n"
-        "7. Reply with a one-line summary and STOP. No further tool calls.",
-        tid,
-    )
-
-
-@app.command()
-def style(
-    thread: str = typer.Option(None, "--thread"),
-) -> None:
-    """Compile style/STYLE.md from samples in style/samples/."""
-    tid = thread or read_thread_id()
-    write_thread_id(tid)
-    _run(
-        "Compile a style guide. Steps, each done at most once:\n"
-        "1. `ls` `/style/samples/` to list files.\n"
-        "2. `read_file` each sample (each file at most once).\n"
-        "3. Write `/style/STYLE.md` with `write_file` if it does not "
-        "exist, or `edit_file` if it does. Produce a prescriptive style "
-        "guide per the `style-learner` skill (voice, sentence rhythm, "
-        "lexicon, POV, citation placement, structure).\n"
-        "4. Reply with a one-line summary of what you wrote and STOP. "
-        "Do not re-read files. Do not make further tool calls after the "
-        "write.",
-        tid,
-    )
-
-
-@app.command()
-def write(
-    section: str = typer.Argument(..., help="Section identifier from thesis/outline.md, e.g. '2.1'."),
-    thread: str = typer.Option(None, "--thread"),
-) -> None:
-    """Draft one thesis section, grounded in the wiki, in your style."""
-    tid = thread or read_thread_id()
-    write_thread_id(tid)
-    _run(
-        f"Invoke the thesis-writer skill to draft section '{section}' from "
-        f"`thesis/outline.md`. Follow `style/STYLE.md` and cite every factual "
-        f"claim with `[src:<raw_filename>]`. Write to `thesis/chapters/`.",
-        tid,
-    )
-
-
-@app.command()
-def lint(
-    file: Path | None = typer.Argument(
-        None,
-        help="Chapter file to lint. If omitted, runs the wiki-linter over research/wiki/.",
-    ),
-    citations: bool = typer.Option(
-        False, "--citations",
-        help="Force citation-only linting (ungrounded claims, dead [src:...] markers) even with no file argument.",
-    ),
-    thread: str = typer.Option(None, "--thread"),
-) -> None:
-    """Lint the wiki (default) or a thesis chapter.
-
-    Without arguments → wiki health check (orphans, stale claims, missing
-    cross-refs, data gaps, follow-up questions) via the `wiki-linter` skill.
-
-    With a chapter file or `--citations` → citation-only scan via the
-    `citation-linter` skill (dead markers, ungrounded paragraphs).
-    """
-    tid = thread or read_thread_id()
-    write_thread_id(tid)
-
-    if file is not None:
-        _run(
-            f"Invoke the citation-linter skill on {file}. Report dead "
-            f"citations and ungrounded paragraphs. Do not auto-edit.",
-            tid,
-        )
-        return
-
-    if citations:
-        _run(
-            "Invoke the citation-linter skill on `thesis/chapters/*.md`. "
-            "Report dead citations and ungrounded paragraphs. Do not auto-edit.",
-            tid,
-        )
-        return
-
-    _run(
-        "Invoke the wiki-linter skill. Scan `research/wiki/**` for "
-        "contradictions, stale claims, orphan pages, missing cross-refs, "
-        "missing entity/concept pages, and data gaps. Suggest 2-5 "
-        "follow-up questions. Append a lint entry to `research/wiki/log.md`. "
-        "Do not auto-fix.",
-        tid,
-    )
 
 
 _CHAT_BANNER = """[bold]thesis-agent chat[/bold]
@@ -1294,7 +1175,10 @@ def _root(
         console.print(f"thesis-agent {__version__}")
         raise typer.Exit(0)
     if ctx.invoked_subcommand is None:
-        console.print(ctx.get_help())
+        # Bare `thesis` drops straight into the agent chat — this is the
+        # primary interface. Use `thesis --help` for the command list,
+        # `thesis ingest` / `setup` / `init` / `status` for utilities.
+        ctx.invoke(chat)
         raise typer.Exit(0)
 
 

@@ -226,15 +226,6 @@ class TestNoRetryLanguageInPrompts:
             text = (REPO_ROOT / rel).read_text(encoding="utf-8").lower()
             assert "missed the point" not in text, f"'missed the point' still in {rel}"
 
-    def test_cli_prompts_have_explicit_stop_markers(self):
-        """Weak models need an explicit STOP signal or they keep
-        generating tool calls after the real work is done."""
-        cli_text = (REPO_ROOT / "src" / "thesis_agent" / "cli.py").read_text(encoding="utf-8")
-        assert "STOP" in cli_text, (
-            "cli.py prompts should tell the agent to STOP explicitly — "
-            "we found weak models continuing to make tool calls without this"
-        )
-
     def test_wiki_curator_skill_uses_softer_guidance(self):
         skill = (REPO_ROOT / "skills" / "wiki-curator" / "SKILL.md").read_text(encoding="utf-8")
         # Soft guidance words should appear (any of them)

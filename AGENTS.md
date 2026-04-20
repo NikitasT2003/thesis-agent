@@ -268,15 +268,38 @@ Report file + line numbers. Do not auto-edit.
 
 ---
 
-## Write scopes (enforced by the sandbox middleware)
+## Write scopes
 
-- `researcher` subagent: **read-only**.
-- `wiki-curator` subagent: may write under `research/wiki/**` and update
+The filesystem tools are scoped to the workspace root. Within the
+workspace the two hard rules are "never `research/raw/`" (sources are
+immutable — ingest normalises them via `thesis ingest` instead) and
+"never `data/`" (agent's own memory databases).
+
+By convention:
+
+- `researcher` subagent — read-only.
+- `wiki-curator` subagent — writes under `research/wiki/**` and edits
   `research/raw/_index.json`.
-- `drafter` subagent: may write under `thesis/**`.
-- Main agent: may write to `research/wiki/**`, `style/STYLE.md`, `thesis/**`,
-  and `research/raw/_index.json`. **Never** to `research/raw/` (sources are
-  immutable) or `data/` (reserved for memory databases).
+- `drafter` subagent — writes under `thesis/**`.
+- Main agent — writes anywhere in the workspace except the two denied
+  paths above. Typically: `research/wiki/**`, `style/STYLE.md`,
+  `thesis/**`, `research/raw/_index.json`.
+
+## Tools at runtime
+
+- **Filesystem** (`read_file`, `write_file`, `edit_file`, `ls`, `glob`,
+  `grep`) scoped to the workspace root via
+  `FilesystemBackend(virtual_mode=True)`.
+- **Bash** — shell in the workspace, captures stdout/stderr, timed out
+  at 60 s by default (`THESIS_SHELL_TIMEOUT_SEC` to change). Use for
+  `thesis ingest`, git, pandoc, pytest, anything deterministic you'd
+  type at a shell. Disabled globally with `THESIS_NO_SHELL=1`.
+- **MCP tools** — servers listed in `.thesis/mcp.json` (or
+  `$THESIS_MCP_CONFIG`) are connected at boot via
+  `langchain-mcp-adapters`. Supports stdio / SSE / streamable_http.
+- **Memory** — writes to `/memories/**` persist across chat sessions
+  (backed by SQLite). Use for user preferences + long-running context;
+  wiki and thesis content stay under their own trees.
 
 ---
 

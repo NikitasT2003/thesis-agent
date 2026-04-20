@@ -57,36 +57,48 @@ def _init(ws: Path):
     return result
 
 
-def _record_invoke(monkeypatch, reply: str = "ok") -> list[tuple[str, str]]:
-    seen: list[tuple[str, str]] = []
-
-    def fake_invoke(prompt: str, *, thread_id: str, p=None):
-        seen.append((prompt, thread_id))
-        return reply
-
-    monkeypatch.setattr("thesis_agent.agent.invoke", fake_invoke)
-    return seen
-
-
 # ---------------------------------------------------------------------------
 # Top-level flags
 # ---------------------------------------------------------------------------
 
 class TestTopLevel:
-    def test_no_args_prints_help(self):
-        result = runner.invoke(cli.app, [])
+    def test_no_args_opens_chat(self, ws: Path, monkeypatch):
+        """Bare `thesis` drops straight into the chat REPL — that's the
+        primary interface now. The old behaviour (print help) moved to
+        `thesis --help`."""
+        # Patch build_agent so we don't need a real LLM + skills dir.
+        from contextlib import contextmanager
+
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        class _Stub:
+            def stream(self, payload, *, config=None, stream_mode=None):
+                human = HumanMessage(content=payload["messages"][-1]["content"])
+                yield {"messages": [human]}
+                yield {"messages": [human, AIMessage(content="ok")]}
+
+        @contextmanager
+        def _fake_build_agent(**kw):
+            yield _Stub()
+
+        monkeypatch.setattr("thesis_agent.agent.build_agent", _fake_build_agent)
+        result = runner.invoke(cli.app, [], input="/quit\n")
         assert result.exit_code == 0
-        assert "setup" in result.stdout
-        assert "ingest" in result.stdout
+        # The chat banner is a reliable marker that we entered the REPL.
+        assert "thesis-agent chat" in result.stdout
 
     def test_help_lists_every_command(self):
         result = runner.invoke(cli.app, ["--help"])
         assert result.exit_code == 0
-        for cmd in (
-            "setup", "init", "status", "ingest",
-            "curate", "style", "write", "lint", "chat",
-        ):
+        # Agent-facing commands (curate/style/write/lint) were removed —
+        # the agent picks skills itself from the chat REPL now.
+        for cmd in ("setup", "init", "status", "ingest", "chat"):
             assert cmd in result.stdout, f"missing command in --help: {cmd}"
+        # And confirm the old ones aren't there to catch regressions.
+        for removed in ("curate", "style", " write ", "lint"):
+            assert removed not in result.stdout, (
+                f"command {removed!r} should be gone; ask in chat instead"
+            )
 
     def test_version_flag(self):
         result = runner.invoke(cli.app, ["--version"])
@@ -294,116 +306,9 @@ class TestIngest:
 
 
 # ---------------------------------------------------------------------------
-# curate / style / write / lint  (agent-dispatch commands)
+# Former curate/style/write/lint commands intentionally removed.
+# The agent drives what to do based on what the user asks in chat.
 # ---------------------------------------------------------------------------
-
-class TestAgentCommands:
-    @pytest.mark.parametrize("cmd", ["curate", "style", "write", "lint"])
-    def test_each_has_help(self, ws: Path, cmd: str):
-        args = ["write", "1.1"] if cmd == "write" else [cmd]
-        # --help bypasses any required args
-        result = runner.invoke(cli.app, [cmd, "--help"])
-        assert result.exit_code == 0
-        _ = args
-
-    def test_curate_prompt_mentions_pending_and_status(self, ws: Path, monkeypatch):
-        _init(ws)
-        seen = _record_invoke(monkeypatch)
-        result = runner.invoke(cli.app, ["curate"])
-        assert result.exit_code == 0, result.stdout
-        prompt, _ = seen[0]
-        assert "pending" in prompt.lower()
-        assert "status" in prompt.lower() or "_index.json" in prompt
-
-    def test_style_prompt_mentions_samples_and_styleguide(self, ws: Path, monkeypatch):
-        _init(ws)
-        seen = _record_invoke(monkeypatch)
-        runner.invoke(cli.app, ["style"])
-        prompt, _ = seen[0]
-        assert "style/samples" in prompt
-        assert "STYLE.md" in prompt
-
-    def test_write_requires_section_argument(self, ws: Path):
-        _init(ws)
-        result = runner.invoke(cli.app, ["write"])
-        assert result.exit_code != 0  # missing required arg
-
-    def test_write_carries_section_through(self, ws: Path, monkeypatch):
-        _init(ws)
-        seen = _record_invoke(monkeypatch)
-        runner.invoke(cli.app, ["write", "3.2"])
-        assert "3.2" in seen[0][0]
-        assert "thesis/chapters" in seen[0][0]
-
-    def test_lint_defaults_to_wiki_linter(self, ws: Path, monkeypatch):
-        """No args → wiki health check under research/wiki/."""
-        _init(ws)
-        seen = _record_invoke(monkeypatch)
-        runner.invoke(cli.app, ["lint"])
-        prompt = seen[0][0]
-        assert "wiki-linter" in prompt
-        assert "research/wiki" in prompt
-        # And the log-append convention is reinforced
-        assert "log.md" in prompt
-
-    def test_lint_specific_file_uses_citation_linter(self, ws: Path, monkeypatch):
-        """Passing a chapter file → narrow citation lint, not wiki lint."""
-        _init(ws)
-        target = ws / "thesis" / "chapters" / "03.md"
-        target.write_text("# 3\n", encoding="utf-8")
-        seen = _record_invoke(monkeypatch)
-        runner.invoke(cli.app, ["lint", str(target)])
-        prompt = seen[0][0]
-        assert "citation-linter" in prompt
-        assert "03.md" in prompt or str(target) in prompt
-        assert "wiki-linter" not in prompt
-
-    def test_lint_citations_flag_forces_citation_linter(self, ws: Path, monkeypatch):
-        """--citations without a file → citation lint over all chapters."""
-        _init(ws)
-        seen = _record_invoke(monkeypatch)
-        runner.invoke(cli.app, ["lint", "--citations"])
-        prompt = seen[0][0]
-        assert "citation-linter" in prompt
-        assert "thesis/chapters" in prompt
-
-    @pytest.mark.parametrize("cmd,extra", [
-        ("curate", []),
-        ("style", []),
-        ("write", ["2.1"]),
-        ("lint", []),
-    ])
-    def test_thread_flag_persists_per_command(self, ws: Path, monkeypatch, cmd, extra):
-        _init(ws)
-        _record_invoke(monkeypatch)
-        runner.invoke(cli.app, [cmd, *extra, "--thread", f"t-{cmd}"])
-        assert (ws / "data" / ".thread").read_text(encoding="utf-8").strip() == f"t-{cmd}"
-
-    @pytest.mark.parametrize("cmd,extra", [
-        ("curate", []), ("style", []), ("write", ["1.1"]), ("lint", []),
-    ])
-    def test_agent_error_reported_and_nonzero(self, ws: Path, monkeypatch, cmd, extra):
-        _init(ws)
-
-        def raiser(*a, **kw):
-            raise RuntimeError("oops")
-
-        monkeypatch.setattr("thesis_agent.agent.invoke", raiser)
-        result = runner.invoke(cli.app, [cmd, *extra])
-        assert result.exit_code != 0
-        assert "oops" in result.stdout or "agent error" in result.stdout.lower()
-
-    def test_commands_use_persisted_thread_when_flag_absent(self, ws: Path, monkeypatch):
-        _init(ws)
-        seen = _record_invoke(monkeypatch)
-        # First run sets persisted id
-        runner.invoke(cli.app, ["curate", "--thread", "t-shared"])
-        # Second run without flag should reuse
-        runner.invoke(cli.app, ["lint"])
-        _, tid1 = seen[0]
-        _, tid2 = seen[1]
-        assert tid1 == "t-shared"
-        assert tid2 == "t-shared"
 
 
 # ---------------------------------------------------------------------------
