@@ -1,0 +1,54 @@
+# Subagents — loaded by `load_subagents("subagents.yaml")` in agent.py.
+#
+# Each entry maps to a deepagents SubAgent dict. Fields:
+#   name          — how the main agent refers to it via the `task` tool
+#   description   — when the main agent should delegate to this subagent
+#                   (this is what the orchestrator reads to decide)
+#   model         — role tag; resolved via thesis_agent.config.models() at
+#                   boot. Use "drafter", "curator", or "researcher" to pick
+#                   up the configured model for that role.
+#   system_prompt — short identity + scope reminder. AGENTS.md is already
+#                   in the system prompt via the memory middleware, so
+#                   don't repeat its rules here.
+#
+# The agent picks skills (under `skills/`) on demand; the subagent prompts
+# deliberately don't pre-select which skill to use.
+
+- name: wiki-curator
+  description: >
+    Delegate ingest / wiki-building work to this subagent when the user
+    asks to curate, ingest into the wiki, or build/update wiki pages.
+    The subagent reads raw sources + writes under `research/wiki/` per
+    AGENTS.md.
+  model: curator
+  system_prompt: |
+    You are the wiki-curator. Read AGENTS.md (already in your system
+    prompt) and follow it. Your scope: read raw sources from
+    `research/raw/`, build wiki pages under `research/wiki/**`, update
+    `index.md` and `log.md`, flip manifest status. Pick the right skill
+    from `skills/` yourself — `wiki-curator` is the obvious one. Report
+    honestly; do not retry to pad page counts.
+
+- name: drafter
+  description: >
+    Delegate thesis drafting to this subagent when the user asks to
+    write, draft, or expand a chapter or section. The subagent reads
+    `style/STYLE.md` + the wiki, writes under `thesis/chapters/`.
+  model: drafter
+  system_prompt: |
+    You are the drafter. Read AGENTS.md for the grounding + citation
+    rules. Read `style/STYLE.md` before writing. Every factual claim
+    carries `[src:<raw_filename>]`. Write under `thesis/chapters/`.
+    Pick the `thesis-writer` skill for workflow detail.
+
+- name: researcher
+  description: >
+    Delegate read-only questions about what the indexed sources say
+    to this subagent. It navigates the wiki and answers with citations
+    but does NOT write anywhere.
+  model: researcher
+  system_prompt: |
+    You are the researcher — read-only. Navigate the wiki starting
+    from `research/wiki/index.md`, drill into concepts → entities →
+    sources. Answer with `[src:...]` citations. If the wiki has no
+    answer, say so.

@@ -1,14 +1,13 @@
-"""Subagent configuration integrity."""
+"""Subagent YAML loader tests."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from thesis_agent.config import ModelConfig
-from thesis_agent.subagents import (
-    DRAFTER_PROMPT,
-    RESEARCHER_PROMPT,
-    WIKI_CURATOR_PROMPT,
-    get_subagents,
-)
+from thesis_agent.subagents import load_subagents
 
 
 def _stub_models() -> ModelConfig:
@@ -19,66 +18,125 @@ def _stub_models() -> ModelConfig:
     )
 
 
-def test_three_subagents_with_expected_names(monkeypatch):
-    # Avoid network: patch make_model to a sentinel.
-    import thesis_agent.subagents as sa
+@pytest.fixture
+def patch_make_model(monkeypatch):
+    """Replace make_model with a stub that records calls and returns a
+    sentinel, so we can verify role→model resolution without touching
+    provider SDKs."""
+    import thesis_agent.subagents as sub_mod
 
-    sentinel = object()
-    monkeypatch.setattr(sa, "make_model", lambda *a, **kw: sentinel)
+    seen: list[tuple[str, str | None]] = []
 
-    subs = get_subagents(_stub_models())
-    assert len(subs) == 3
-    names = {s["name"] for s in subs}
+    def fake(model_id: str, *, role=None, **kwargs):
+        seen.append((model_id, role))
+        return f"MODEL({model_id}|{role})"
+
+    monkeypatch.setattr(sub_mod, "make_model", fake)
+    return seen
+
+
+def test_returns_empty_when_yaml_missing(tmp_path: Path):
+    assert load_subagents(tmp_path / "nope.yaml", _stub_models()) == []
+
+
+def test_loads_all_entries(tmp_path: Path, patch_make_model):
+    p = tmp_path / "subagents.yaml"
+    p.write_text(
+        """
+- name: alpha
+  description: does alpha things
+  system_prompt: you are alpha
+  model: drafter
+
+- name: beta
+  description: does beta things
+  system_prompt: you are beta
+  model: researcher
+""",
+        encoding="utf-8",
+    )
+    out = load_subagents(p, _stub_models())
+    assert len(out) == 2
+    names = {e["name"] for e in out}
+    assert names == {"alpha", "beta"}
+    # Required fields pass through
+    for entry in out:
+        assert "description" in entry
+        assert "system_prompt" in entry
+        assert "model" in entry
+
+
+def test_role_tag_resolves_to_configured_model(tmp_path: Path, patch_make_model):
+    p = tmp_path / "subagents.yaml"
+    p.write_text(
+        """
+- name: d
+  description: drafter
+  system_prompt: ""
+  model: drafter
+- name: c
+  description: curator
+  system_prompt: ""
+  model: curator
+- name: r
+  description: researcher
+  system_prompt: ""
+  model: researcher
+""",
+        encoding="utf-8",
+    )
+    load_subagents(p, _stub_models())
+    resolved = dict(patch_make_model)  # (model_id, role) pairs
+    assert resolved["anthropic:claude-sonnet-4-6"] in ("drafter", "curator")
+    assert resolved["anthropic:claude-haiku-4-5-20251001"] == "researcher"
+
+
+def test_unknown_role_falls_back_to_drafter(tmp_path: Path, patch_make_model):
+    p = tmp_path / "subagents.yaml"
+    p.write_text(
+        """
+- name: weird
+  description: weird role
+  system_prompt: ""
+  model: genius
+""",
+        encoding="utf-8",
+    )
+    load_subagents(p, _stub_models())
+    # The drafter model id got used; role arg passed as None (unknown role)
+    assert patch_make_model == [("anthropic:claude-sonnet-4-6", None)]
+
+
+def test_invalid_top_level_raises(tmp_path: Path, patch_make_model):
+    p = tmp_path / "subagents.yaml"
+    p.write_text("not: a list\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="list"):
+        load_subagents(p, _stub_models())
+
+
+def test_non_dict_entries_skipped(tmp_path: Path, patch_make_model):
+    p = tmp_path / "subagents.yaml"
+    p.write_text(
+        """
+- "just a string"
+- name: real
+  description: real one
+  system_prompt: ""
+  model: drafter
+""",
+        encoding="utf-8",
+    )
+    out = load_subagents(p, _stub_models())
+    assert [e["name"] for e in out] == ["real"]
+
+
+def test_bundled_subagents_yaml_parses():
+    """The repo-level subagents.yaml must load cleanly — prevents the file
+    drifting out of sync with the loader."""
+    repo_root = Path(__file__).resolve().parent.parent
+    bundled = repo_root / "subagents.yaml"
+    assert bundled.exists(), "subagents.yaml missing from repo root"
+    out = load_subagents(bundled, _stub_models())
+    # Three canonical subagents: wiki-curator, drafter, researcher.
+    names = {e["name"] for e in out}
     assert names == {"wiki-curator", "drafter", "researcher"}
-
-
-def test_each_subagent_has_required_fields(monkeypatch):
-    import thesis_agent.subagents as sa
-
-    monkeypatch.setattr(sa, "make_model", lambda *a, **kw: object())
-    for sub in get_subagents(_stub_models()):
-        assert "name" in sub and isinstance(sub["name"], str)
-        assert "description" in sub and len(sub["description"]) > 40  # triggers must be informative
-        assert "system_prompt" in sub and len(sub["system_prompt"]) > 100
-        assert "model" in sub
-
-
-def test_prompts_mention_grounding_and_scope():
-    # Wiki curator must mention its write scope + the citation format.
-    assert "research/wiki" in WIKI_CURATOR_PROMPT
-    assert "research/raw/_index.json" in WIKI_CURATOR_PROMPT
-    assert "[src:" in WIKI_CURATOR_PROMPT
-
-    # Drafter must enforce citations + style + scope.
-    assert "[src:" in DRAFTER_PROMPT
-    assert "thesis/" in DRAFTER_PROMPT
-    assert "STYLE.md" in DRAFTER_PROMPT
-
-    # Researcher must declare itself read-only and refuse writes.
-    assert "READ-ONLY" in RESEARCHER_PROMPT or "read-only" in RESEARCHER_PROMPT.lower()
-    assert "no write" in RESEARCHER_PROMPT.lower() or "cannot write" in RESEARCHER_PROMPT.lower()
-
-
-def test_prompts_forbid_web_and_shell():
-    for p in (WIKI_CURATOR_PROMPT, DRAFTER_PROMPT, RESEARCHER_PROMPT):
-        low = p.lower()
-        assert "no web" in low or "no web access" in low
-        assert "no shell" in low
-
-
-def test_subagent_models_come_from_config(monkeypatch):
-    import thesis_agent.subagents as sa
-
-    seen: list[str] = []
-
-    def fake(model_id, **kw):
-        seen.append(model_id)
-        return f"MODEL({model_id})"
-
-    monkeypatch.setattr(sa, "make_model", fake)
-    subs = get_subagents(_stub_models())
-    # Curator uses curator model, drafter uses drafter model, researcher uses researcher model.
-    by_name = {s["name"]: s["model"] for s in subs}
-    assert by_name["wiki-curator"] == "MODEL(anthropic:claude-sonnet-4-6)"
-    assert by_name["drafter"] == "MODEL(anthropic:claude-sonnet-4-6)"
-    assert by_name["researcher"] == "MODEL(anthropic:claude-haiku-4-5-20251001)"

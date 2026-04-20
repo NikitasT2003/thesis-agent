@@ -1,13 +1,8 @@
-"""Runtime tools: bash + MCP loader.
+"""External tool loading: MCP config discovery + tool construction.
 
-User asked for a Claude-Code-style agent in terminal with shell + MCP +
-memory + skills. These tests lock in:
-  * bash runs in the workspace root, captures output, respects
-    timeout + size caps, and is togglable with `THESIS_NO_SHELL=1`
-  * MCP config loader picks up `.thesis/mcp.json` or `$THESIS_MCP_CONFIG`
-    and skips cleanly when absent
-  * `build_runtime_tools()` composes bash + MCP tools into the list
-    that `build_agent` hands to `create_deep_agent(tools=...)`
+Filesystem + shell tools are not tested here — they come from
+deepagents' `LocalShellBackend` and are covered by end-to-end agent
+tests in `test_agent_e2e.py`.
 """
 
 from __future__ import annotations
@@ -23,135 +18,85 @@ from thesis_agent import tools
 @pytest.fixture
 def ws(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.chdir(tmp_path)
-    for v in (
-        "THESIS_NO_SHELL", "THESIS_SHELL_TIMEOUT_SEC",
-        "THESIS_MCP_CONFIG",
-    ):
-        monkeypatch.delenv(v, raising=False)
+    monkeypatch.delenv("THESIS_MCP_CONFIG", raising=False)
     return tmp_path
 
 
 # ---------------------------------------------------------------------------
-# shell_enabled toggle
+# MCP config discovery
 # ---------------------------------------------------------------------------
 
-class TestShellToggle:
-    def test_enabled_by_default(self, ws: Path):
-        assert tools.shell_enabled() is True
-
-    @pytest.mark.parametrize("val", ["1", "true", "yes", "on", "TRUE", "On"])
-    def test_disable_via_env(self, ws: Path, monkeypatch, val):
-        monkeypatch.setenv("THESIS_NO_SHELL", val)
-        assert tools.shell_enabled() is False
-
-    @pytest.mark.parametrize("val", ["0", "", "false", "no", "off"])
-    def test_falsy_env_keeps_shell_enabled(self, ws: Path, monkeypatch, val):
-        monkeypatch.setenv("THESIS_NO_SHELL", val)
-        assert tools.shell_enabled() is True
-
-
-# ---------------------------------------------------------------------------
-# bash tool
-# ---------------------------------------------------------------------------
-
-class TestBashTool:
-    def test_runs_command_in_workspace_cwd(self, ws: Path):
-        # Use a command that works on both POSIX and Windows.
-        result = tools.bash_tool.invoke({"command": "echo hello-bash"})
-        assert "exit=0" in result
-        assert "hello-bash" in result
-
-    def test_captures_nonzero_exit(self, ws: Path):
-        # `exit 7` works in both bash and cmd
-        import sys
-        cmd = "exit 7" if sys.platform == "win32" else "exit 7"
-        result = tools.bash_tool.invoke({"command": cmd})
-        assert "exit=7" in result
-
-    def test_output_size_capped(self, ws: Path, monkeypatch):
-        # Generate ~100KB of output — must be truncated
-        import sys
-        if sys.platform == "win32":
-            # PowerShell one-liner would be huge to type; Python is portable.
-            py = sys.executable
-            cmd = f'"{py}" -c "print(\'x\' * 100000)"'
-        else:
-            cmd = "python -c 'print(\"x\" * 100000)'"
-        monkeypatch.setenv("THESIS_SHELL_TIMEOUT_SEC", "30")
-        result = tools.bash_tool.invoke({"command": cmd})
-        # Output is capped at 64KB per the config constant
-        assert "truncated" in result.lower() or len(result) < 70_000
-
-    def test_timeout_respected(self, ws: Path, monkeypatch):
-        monkeypatch.setenv("THESIS_SHELL_TIMEOUT_SEC", "5")  # floor
-        assert tools._shell_timeout() == 5
-
-    def test_timeout_has_floor(self, ws: Path, monkeypatch):
-        monkeypatch.setenv("THESIS_SHELL_TIMEOUT_SEC", "1")
-        # Clamped to >= 5 so we don't ship a useless 1s timeout.
-        assert tools._shell_timeout() >= 5
-
-    def test_bogus_timeout_env_falls_back(self, ws: Path, monkeypatch):
-        monkeypatch.setenv("THESIS_SHELL_TIMEOUT_SEC", "forever")
-        assert tools._shell_timeout() == tools._SHELL_DEFAULT_TIMEOUT
-
-
-# ---------------------------------------------------------------------------
-# MCP config resolution
-# ---------------------------------------------------------------------------
-
-class TestMCPConfig:
-    def test_path_default_when_none_present(self, ws: Path):
-        path = tools._mcp_config_path()
-        assert path.name == "mcp.json"
-        assert not path.exists()
+class TestMCPConfigPath:
+    def test_default_is_dot_thesis_mcp_json(self, ws: Path):
+        """With no file and no env var, we return the canonical default path
+        (non-existent) so the caller can decide whether to create it."""
+        p = tools._mcp_config_path()
+        assert p.name == "mcp.json"
+        assert not p.exists()
 
     def test_env_override_absolute(self, ws: Path, monkeypatch):
         (ws / "custom.json").write_text("{}", encoding="utf-8")
         monkeypatch.setenv("THESIS_MCP_CONFIG", str(ws / "custom.json"))
-        assert tools._mcp_config_path() == (ws / "custom.json").resolve() or \
-               tools._mcp_config_path() == (ws / "custom.json")
+        assert tools._mcp_config_path().name == "custom.json"
 
-    def test_env_override_relative(self, ws: Path, monkeypatch):
+    def test_env_override_relative_to_workspace(self, ws: Path, monkeypatch):
         (ws / "x.json").write_text("{}", encoding="utf-8")
         monkeypatch.setenv("THESIS_MCP_CONFIG", "x.json")
-        p = tools._mcp_config_path()
-        assert p.name == "x.json"
+        assert tools._mcp_config_path().name == "x.json"
 
-    def test_prefers_dot_thesis(self, ws: Path):
+    def test_dot_thesis_preferred_over_flat(self, ws: Path):
         (ws / ".thesis").mkdir()
         (ws / ".thesis" / "mcp.json").write_text("{}", encoding="utf-8")
         (ws / "mcp.json").write_text("{}", encoding="utf-8")
         assert tools._mcp_config_path() == (ws / ".thesis" / "mcp.json")
 
-    def test_load_mcp_config_missing_returns_empty(self, ws: Path):
+    def test_flat_fallback(self, ws: Path):
+        (ws / "mcp.json").write_text("{}", encoding="utf-8")
+        assert tools._mcp_config_path() == (ws / "mcp.json")
+
+
+# ---------------------------------------------------------------------------
+# _load_mcp_config parsing
+# ---------------------------------------------------------------------------
+
+class TestLoadMCPConfig:
+    def test_missing_returns_empty(self, ws: Path):
         assert tools._load_mcp_config() == {}
 
-    def test_load_mcp_config_invalid_json_reports_error(self, ws: Path):
+    def test_invalid_json_reports_error(self, ws: Path):
         (ws / "mcp.json").write_text("{ not valid", encoding="utf-8")
         cfg = tools._load_mcp_config()
         assert "_error" in cfg
 
+    def test_non_dict_toplevel_treated_as_empty(self, ws: Path):
+        (ws / "mcp.json").write_text("[1,2,3]", encoding="utf-8")
+        assert tools._load_mcp_config() == {}
+
+    def test_parses_valid(self, ws: Path):
+        (ws / "mcp.json").write_text(
+            json.dumps({"servers": {"a": {"command": "x"}}}),
+            encoding="utf-8",
+        )
+        cfg = tools._load_mcp_config()
+        assert cfg == {"servers": {"a": {"command": "x"}}}
+
 
 # ---------------------------------------------------------------------------
-# load_mcp_tools_sync behaviour
+# load_mcp_tools_sync composition
 # ---------------------------------------------------------------------------
 
 class TestLoadMCPTools:
-    def test_returns_empty_when_no_config(self, ws: Path):
+    def test_no_config_returns_empty(self, ws: Path):
         assert tools.load_mcp_tools_sync() == []
 
-    def test_handles_flat_config(self, ws: Path, monkeypatch):
-        """Config in the flat `{server: {...}}` form (no `servers` key).
-        Patch MultiServerMCPClient so we don't need a real server."""
+    def test_flat_config_reaches_client(self, ws: Path, monkeypatch):
+        """Flat `{server: {...}}` form is accepted alongside the nested
+        `{servers: {...}}` form."""
         (ws / "mcp.json").write_text(
-            json.dumps({
-                "fake-server": {"command": "echo", "transport": "stdio"},
-            }),
+            json.dumps({"alpha": {"command": "echo", "transport": "stdio"}}),
             encoding="utf-8",
         )
-
-        recorded = {}
+        recorded: dict = {}
 
         class _FakeClient:
             def __init__(self, servers):
@@ -161,20 +106,17 @@ class TestLoadMCPTools:
                 return ["t1", "t2"]
 
         import sys
-        fake_mod = __import__("types").ModuleType("langchain_mcp_adapters.client")
-        fake_mod.MultiServerMCPClient = _FakeClient
-        monkeypatch.setitem(sys.modules, "langchain_mcp_adapters.client", fake_mod)
+        import types
+        fake = types.ModuleType("langchain_mcp_adapters.client")
+        fake.MultiServerMCPClient = _FakeClient
+        monkeypatch.setitem(sys.modules, "langchain_mcp_adapters.client", fake)
 
-        result = tools.load_mcp_tools_sync()
-        assert result == ["t1", "t2"]
-        assert "fake-server" in recorded["servers"]
+        assert tools.load_mcp_tools_sync() == ["t1", "t2"]
+        assert "alpha" in recorded["servers"]
 
-    def test_handles_nested_servers_key(self, ws: Path, monkeypatch):
-        """Config in the `{servers: {srv: {...}}}` form."""
+    def test_nested_servers_key_form(self, ws: Path, monkeypatch):
         (ws / "mcp.json").write_text(
-            json.dumps({
-                "servers": {"svc": {"url": "http://x", "transport": "sse"}},
-            }),
+            json.dumps({"servers": {"svc": {"url": "http://x"}}}),
             encoding="utf-8",
         )
 
@@ -186,15 +128,16 @@ class TestLoadMCPTools:
                 return [f"from-{name}" for name in self.servers]
 
         import sys
-        fake_mod = __import__("types").ModuleType("langchain_mcp_adapters.client")
-        fake_mod.MultiServerMCPClient = _FakeClient
-        monkeypatch.setitem(sys.modules, "langchain_mcp_adapters.client", fake_mod)
+        import types
+        fake = types.ModuleType("langchain_mcp_adapters.client")
+        fake.MultiServerMCPClient = _FakeClient
+        monkeypatch.setitem(sys.modules, "langchain_mcp_adapters.client", fake)
 
         assert tools.load_mcp_tools_sync() == ["from-svc"]
 
-    def test_failed_server_connection_returns_empty(self, ws: Path, monkeypatch):
+    def test_server_failure_returns_empty_and_does_not_raise(self, ws: Path, monkeypatch):
         (ws / "mcp.json").write_text(
-            json.dumps({"bad": {"command": "echo", "transport": "stdio"}}),
+            json.dumps({"bad": {"command": "x"}}),
             encoding="utf-8",
         )
 
@@ -203,53 +146,34 @@ class TestLoadMCPTools:
                 pass
 
             async def get_tools(self):
-                raise RuntimeError("boom")
+                raise RuntimeError("cannot connect")
 
         import sys
-        fake_mod = __import__("types").ModuleType("langchain_mcp_adapters.client")
-        fake_mod.MultiServerMCPClient = _FakeClient
-        monkeypatch.setitem(sys.modules, "langchain_mcp_adapters.client", fake_mod)
+        import types
+        fake = types.ModuleType("langchain_mcp_adapters.client")
+        fake.MultiServerMCPClient = _FakeClient
+        monkeypatch.setitem(sys.modules, "langchain_mcp_adapters.client", fake)
 
-        # Must not raise — we warn and return empty.
+        # Must not raise — we log + return [] so the rest of the agent boots.
+        assert tools.load_mcp_tools_sync() == []
+
+    def test_bad_json_returns_empty(self, ws: Path):
+        (ws / "mcp.json").write_text("{ not valid", encoding="utf-8")
         assert tools.load_mcp_tools_sync() == []
 
 
 # ---------------------------------------------------------------------------
-# build_runtime_tools composition
+# LocalShellBackend gives us execute (sanity check — wiring)
 # ---------------------------------------------------------------------------
 
-class TestBuildRuntimeTools:
-    def test_includes_bash_by_default(self, ws: Path):
-        out = tools.build_runtime_tools()
-        names = [getattr(t, "name", None) for t in out]
-        assert "bash" in names
+class TestLocalShellBackendWiring:
+    def test_execute_is_available_on_backend(self):
+        """Regression: deepagents' `LocalShellBackend` provides the
+        `execute` tool out of the box. If this import or attribute goes
+        away in a deepagents upgrade, the agent loses its shell."""
+        from deepagents.backends import LocalShellBackend
 
-    def test_excludes_bash_when_disabled(self, ws: Path, monkeypatch):
-        monkeypatch.setenv("THESIS_NO_SHELL", "1")
-        out = tools.build_runtime_tools()
-        names = [getattr(t, "name", None) for t in out]
-        assert "bash" not in names
-
-    def test_composes_bash_plus_mcp(self, ws: Path, monkeypatch):
-        (ws / "mcp.json").write_text(
-            json.dumps({"s": {"command": "x", "transport": "stdio"}}),
-            encoding="utf-8",
+        assert hasattr(LocalShellBackend, "execute"), (
+            "LocalShellBackend.execute is missing — upgrade likely broke "
+            "the shell tool wiring"
         )
-
-        class _FakeClient:
-            def __init__(self, servers):
-                pass
-
-            async def get_tools(self):
-                return ["mcp-tool-a", "mcp-tool-b"]
-
-        import sys
-        fake_mod = __import__("types").ModuleType("langchain_mcp_adapters.client")
-        fake_mod.MultiServerMCPClient = _FakeClient
-        monkeypatch.setitem(sys.modules, "langchain_mcp_adapters.client", fake_mod)
-
-        out = tools.build_runtime_tools()
-        # bash plus the two mcp strings
-        assert "mcp-tool-a" in out
-        assert "mcp-tool-b" in out
-        assert any(getattr(t, "name", None) == "bash" for t in out)

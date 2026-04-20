@@ -1,99 +1,60 @@
-"""Subagents: specialised delegates with tight write scopes.
+"""Subagents loader — turns `subagents.yaml` into a list of deepagents
+SubAgent dicts.
 
-Defined in code per deepagents idiom — not YAML. Each carries its own system
-prompt (repeating the scope + grounding rule in agent-local terms) so sandbox
-violations are discouraged at the prompt layer as well as enforced at the
-middleware layer.
+Uses the same pattern as the canonical deepagents content-builder
+example: keep subagent config as YAML in the project folder so the user
+(or the agent itself) can edit it without touching Python. The helper
+resolves the `model` role tag to the actual model instance via
+`thesis_agent.config.make_model`.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
+import yaml
+
 from thesis_agent.config import ModelConfig, make_model
 
-WIKI_CURATOR_PROMPT = """You are the wiki-curator subagent.
 
-Your job: read `research/raw/<file>.md` normalized sources and produce one
-`research/wiki/<file>.md` wiki page per source, following the template in
-`AGENTS.md` exactly.
+def load_subagents(path: str | Path, models: ModelConfig) -> list[dict[str, Any]]:
+    """Parse `subagents.yaml` and return the list deepagents expects.
 
-Strict rules (repeat of AGENTS.md; do not deviate):
-- One wiki page per raw file; filename stem matches the raw file.
-- Every claim in the wiki page carries `[src:<raw_filename>]`.
-- Update `research/wiki/index.md` to list the new page under topic tags.
-- When done with a source, set its `status` in `research/raw/_index.json` to
-  `curated` and append the produced wiki filename to its `curated_pages` list.
-- Contradiction handling: flag only. If a new page's claim conflicts with an
-  existing page, add `⚠ conflicts with [[other_source]]` to both pages'
-  `Conflicts` section. Do NOT quote both sides. Do NOT merge.
-- You may ONLY write to `research/wiki/**` and `research/raw/_index.json`.
-  Any other write will be rejected by the sandbox.
-- You have no web access. You have no shell. Work from the raw file text only.
-"""
+    Each YAML entry must have:
+      * name           — unique identifier used by the `task` tool
+      * description    — when to delegate (read by the orchestrator)
+      * system_prompt  — the subagent's identity + scope
+      * model          — a role tag: "drafter" / "curator" / "researcher".
+                         Resolved to an actual model instance here.
 
-DRAFTER_PROMPT = """You are the drafter subagent.
+    Unknown role tags fall through to the drafter model.
+    """
+    p = Path(path)
+    if not p.exists():
+        return []
 
-Your job: write thesis sections into `thesis/chapters/<NN>.md`, in the user's
-voice (loaded from `style/STYLE.md`), strictly grounded in `research/wiki/`
-and `research/raw/`.
+    entries = yaml.safe_load(p.read_text(encoding="utf-8")) or []
+    if not isinstance(entries, list):
+        raise ValueError(
+            f"{path}: expected a YAML list of subagent entries, got "
+            f"{type(entries).__name__}"
+        )
 
-Strict rules:
-- Read `style/STYLE.md` before writing. Match its voice, sentence rhythm,
-  hedging, citation placement, and POV.
-- Every paragraph that makes a factual statement MUST include at least one
-  `[src:<raw_filename>]` citation.
-- If you cannot find grounding for a claim in the wiki or raw files, say
-  "no grounding in indexed sources — add material or remove claim." Do NOT
-  fill the gap from pretraining knowledge.
-- You may ONLY write under `thesis/**`. Any other write will be rejected.
-- Chapter numbering follows `thesis/outline.md`. If the outline lacks the
-  section the user asked for, flag it rather than invent numbering.
-- You have no web access. You have no shell.
-"""
-
-RESEARCHER_PROMPT = """You are the researcher subagent. READ-ONLY.
-
-Your job: given a question, find what the indexed sources say and report back
-with citations. You cannot write any file.
-
-Strict rules:
-- Start from `research/wiki/index.md`. Follow links. Drill into
-  `research/raw/<file>.md` only if the wiki is insufficient.
-- Every claim you report carries `[src:<raw_filename>]`.
-- If the wiki/raw contains no answer, say so plainly.
-- You have no web access. You have no shell. You have no write tools.
-"""
-
-
-def get_subagents(models: ModelConfig) -> list[dict]:
-    """Return deepagents SubAgent dict list. Tools default to parent's."""
-    return [
-        {
-            "name": "wiki-curator",
-            "description": (
-                "Delegate to the wiki-curator to build or update wiki pages from "
-                "raw sources. Use after `thesis ingest` when entries in "
-                "`research/raw/_index.json` have `status: pending`."
-            ),
-            "model": make_model(models.curator, role="curator"),
-            "system_prompt": WIKI_CURATOR_PROMPT,
-        },
-        {
-            "name": "drafter",
-            "description": (
-                "Delegate to the drafter to write a thesis section in the user's "
-                "style, grounded in curated wiki pages. Provide the section "
-                "identifier (from thesis/outline.md) and a short brief."
-            ),
-            "model": make_model(models.drafter, role="drafter"),
-            "system_prompt": DRAFTER_PROMPT,
-        },
-        {
-            "name": "researcher",
-            "description": (
-                "Delegate to the researcher (read-only) to answer questions about "
-                "what indexed sources say on a topic, with citations."
-            ),
-            "model": make_model(models.researcher, role="researcher"),
-            "system_prompt": RESEARCHER_PROMPT,
-        },
-    ]
+    resolved: list[dict[str, Any]] = []
+    for raw in entries:
+        if not isinstance(raw, dict):
+            continue
+        role = str(raw.get("model", "drafter"))
+        model_id = {
+            "drafter": models.drafter,
+            "curator": models.curator,
+            "researcher": models.researcher,
+        }.get(role, models.drafter)
+        resolved.append({
+            "name": raw["name"],
+            "description": raw["description"],
+            "system_prompt": raw["system_prompt"],
+            "model": make_model(model_id, role=role if role in {"drafter", "curator", "researcher"} else None),
+        })
+    return resolved

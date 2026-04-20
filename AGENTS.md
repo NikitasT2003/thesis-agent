@@ -268,38 +268,61 @@ Report file + line numbers. Do not auto-edit.
 
 ---
 
-## Write scopes
+## Write scopes (soft conventions)
 
-The filesystem tools are scoped to the workspace root. Within the
-workspace the two hard rules are "never `research/raw/`" (sources are
-immutable — ingest normalises them via `thesis ingest` instead) and
-"never `data/`" (agent's own memory databases).
+The filesystem tools are scoped to the workspace root. Two hard rules
+inside it:
 
-By convention:
+- Never write to `research/raw/**` — sources are immutable; use
+  `thesis ingest` to add new ones.
+- Never write to `data/**` — that's the agent's own memory databases.
 
-- `researcher` subagent — read-only.
-- `wiki-curator` subagent — writes under `research/wiki/**` and edits
+By convention (subagent descriptions encode these):
+
+- `wiki-curator` — writes under `research/wiki/**` and edits
   `research/raw/_index.json`.
-- `drafter` subagent — writes under `thesis/**`.
-- Main agent — writes anywhere in the workspace except the two denied
-  paths above. Typically: `research/wiki/**`, `style/STYLE.md`,
-  `thesis/**`, `research/raw/_index.json`.
+- `drafter` — writes under `thesis/**`.
+- `researcher` — read-only.
 
-## Tools at runtime
+## Tools at runtime (all built in)
 
-- **Filesystem** (`read_file`, `write_file`, `edit_file`, `ls`, `glob`,
-  `grep`) scoped to the workspace root via
-  `FilesystemBackend(virtual_mode=True)`.
-- **Bash** — shell in the workspace, captures stdout/stderr, timed out
-  at 60 s by default (`THESIS_SHELL_TIMEOUT_SEC` to change). Use for
+You get these for free from `deepagents`' `LocalShellBackend` +
+`StoreBackend`, composed via `CompositeBackend`:
+
+- `read_file`, `write_file`, `edit_file`, `ls`, `glob`, `grep` —
+  filesystem scoped to the workspace root. Virtual paths like
+  `/research/wiki/x.md` map onto disk under the workspace.
+- `execute` — shell commands run from the workspace root, 60 s
+  timeout (`THESIS_SHELL_TIMEOUT_SEC`), 100 KB output cap. Use for
   `thesis ingest`, git, pandoc, pytest, anything deterministic you'd
-  type at a shell. Disabled globally with `THESIS_NO_SHELL=1`.
-- **MCP tools** — servers listed in `.thesis/mcp.json` (or
+  type at a shell prompt.
+- `write_todos`, `read_todos` — task-list scratchpad for multi-step
+  work.
+- `task` — delegate to a subagent defined in `subagents.yaml`.
+- Writes under `/memories/**` persist across chat sessions (routed
+  through a SQLite-backed `StoreBackend`). Use for user preferences
+  and long-running context; wiki + thesis content stay under their
+  own trees.
+
+Plus:
+
+- **MCP tools** — any servers listed in `.thesis/mcp.json` (or
   `$THESIS_MCP_CONFIG`) are connected at boot via
   `langchain-mcp-adapters`. Supports stdio / SSE / streamable_http.
-- **Memory** — writes to `/memories/**` persist across chat sessions
-  (backed by SQLite). Use for user preferences + long-running context;
-  wiki and thesis content stay under their own trees.
+  You can modify the config file yourself when the user asks —
+  `edit_file` on `.thesis/mcp.json` works, and the next `thesis chat`
+  session picks up the change.
+
+The agent is configured by three files in the workspace which the user
+(or you, when asked) can edit:
+
+- `AGENTS.md` — this schema.
+- `skills/<name>/SKILL.md` — workflow definitions triggered by the
+  user's ask. Description field decides when to fire; body loads on
+  demand.
+- `subagents.yaml` — delegated specialist configs. Edit a name,
+  description, or system_prompt and the change takes effect next
+  `thesis chat`.
 
 ---
 
