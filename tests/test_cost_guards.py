@@ -95,9 +95,12 @@ class TestMakeModelCaps:
 # ---------------------------------------------------------------------------
 
 class TestRecursionLimit:
-    def test_default_is_conservative(self, clean_env):
+    def test_default_is_bounded(self, clean_env):
+        """Regression guard: don't silently let the default drift into the
+        hundreds. 60 is the current target — enough for a multi-page
+        curate on one source, still comfortably bounded."""
         assert _recursion_limit() == _DEFAULT_RECURSION_LIMIT
-        assert _DEFAULT_RECURSION_LIMIT <= 50  # regression guard — don't raise silently
+        assert 30 <= _DEFAULT_RECURSION_LIMIT <= 100
 
     def test_env_override(self, clean_env, monkeypatch):
         monkeypatch.setenv("THESIS_RECURSION_LIMIT", "40")
@@ -132,6 +135,16 @@ class TestInvokeConfig:
                 captured.update(config or {})
                 return {"messages": [{"role": "assistant", "content": "ok"}]}
 
+            def stream(self, payload, *, config=None, stream_mode=None):
+                # `invoke()` now uses `.stream()` so the loop detector can
+                # inspect each tool call as it arrives. Fake stream just
+                # captures the config and yields a final assistant message.
+                captured.update(config or {})
+                from langchain_core.messages import AIMessage, HumanMessage
+                human = HumanMessage(content=payload["messages"][-1]["content"])
+                yield {"messages": [human]}
+                yield {"messages": [human, AIMessage(content="ok")]}
+
         @contextmanager
         def fake_build_agent(**kw):
             yield _FakeAgent()
@@ -156,6 +169,16 @@ class TestInvokeConfig:
             def invoke(self, payload, *, config=None):
                 captured.update(config or {})
                 return {"messages": [{"role": "assistant", "content": "ok"}]}
+
+            def stream(self, payload, *, config=None, stream_mode=None):
+                # `invoke()` now uses `.stream()` so the loop detector can
+                # inspect each tool call as it arrives. Fake stream just
+                # captures the config and yields a final assistant message.
+                captured.update(config or {})
+                from langchain_core.messages import AIMessage, HumanMessage
+                human = HumanMessage(content=payload["messages"][-1]["content"])
+                yield {"messages": [human]}
+                yield {"messages": [human, AIMessage(content="ok")]}
 
         @contextmanager
         def fake_build_agent(**kw):

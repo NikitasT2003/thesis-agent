@@ -84,8 +84,12 @@ For a single paper on, say, "attention mechanisms in transformers":
 - `index.md` (updated)
 - `log.md` (appended)
 
-**Total: 7-10 pages touched.** If you only wrote 1-2 pages, you're not
-building a wiki — you're making isolated summaries.
+**Target: 7-10 pages touched.** A well-covered entity or concept benefits
+from its own page even if only one source mentions it — future sources
+will extend those pages. But do not pad: if a source is narrow (one
+short note) and genuinely touches only 1-2 topics, that's fine. Report
+what you did honestly; do not retry or restart the ingest to "hit a
+number".
 
 ## Slug convention (AGENTS.md §Slug)
 

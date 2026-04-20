@@ -61,10 +61,16 @@ COST + EFFICIENCY RULES (non-negotiable):
 
 # LangGraph safety ceiling — stops runaway loops before they bill a fortune.
 # Overridable via THESIS_RECURSION_LIMIT for power users (e.g. large theses
-# with many sources where 25 steps per curate pass isn't enough).
+# with many sources where the default per-pass budget isn't enough).
+#
+# 60 is a pragmatic default: a full curate pass on one source touches
+# ~10-15 pages (source summary + entities + concepts + index + log +
+# manifest), each of which is at least one tool call. Two sources fit.
+# Chat and small linting runs fit easily. Raise via env var for very
+# large batches.
 import os as _os  # noqa: E402
 
-_DEFAULT_RECURSION_LIMIT = 25
+_DEFAULT_RECURSION_LIMIT = 60
 
 
 def _recursion_limit() -> int:
@@ -72,6 +78,43 @@ def _recursion_limit() -> int:
     if raw and raw.strip().isdigit():
         return max(5, int(raw))
     return _DEFAULT_RECURSION_LIMIT
+
+
+# Client-side loop detector. Complements recursion_limit by catching the
+# more common failure mode: the agent making THE SAME tool call over and
+# over (e.g. retrying a write that `write_file` refused to overwrite
+# instead of switching to `edit_file`). Weak or rate-limited models fall
+# into this trap easily; recursion_limit alone wouldn't catch it until
+# step N, wasting every step before then.
+class ToolCallLoopError(RuntimeError):
+    """Raised when the agent repeats the same (tool_name, args) N times."""
+
+
+def _tool_call_signature(tool_call: dict) -> str:
+    """Stable signature for dedup. Stringifies args with sorted keys so
+    equivalent calls hash the same, independent of dict key order."""
+    import json
+
+    name = tool_call.get("name", "?")
+    args = tool_call.get("args") or {}
+    try:
+        serialised = json.dumps(args, sort_keys=True, default=str)
+    except Exception:
+        serialised = str(args)
+    return f"{name}::{serialised}"
+
+
+def _scan_for_loop(signatures: list[str], *, window: int = 10, threshold: int = 3) -> str | None:
+    """Return the offending signature if any has repeated `threshold` times
+    within the most recent `window` tool calls, else None."""
+    from collections import Counter
+
+    recent = signatures[-window:]
+    counts = Counter(recent)
+    for sig, n in counts.items():
+        if n >= threshold:
+            return sig
+    return None
 
 
 def _find_skills_dir() -> Path:
@@ -154,22 +197,51 @@ def build_agent(
 
 
 def invoke(prompt: str, *, thread_id: str, p: Paths | None = None) -> str:
-    """One-shot agent invocation. Returns the assistant's final message."""
+    """One-shot agent invocation. Returns the assistant's final message.
+
+    Uses `stream_mode="values"` so we can inspect each new AIMessage as it
+    arrives and abort if the agent starts looping on the same tool call.
+    This catches a failure mode recursion_limit alone wouldn't: the model
+    retries the same (name, args) call repeatedly (e.g. a weak model that
+    doesn't switch from `write_file` to `edit_file` after an overwrite
+    refusal), burning every step up to the limit before failing.
+    """
+    from langchain_core.messages import AIMessage
+
     with build_agent(p=p) as agent:
         cfg = {
             "configurable": {"thread_id": thread_id},
-            # Hard ceiling on agent loop iterations — stops runaway spend
-            # before it starts. ~25 steps is enough for curating one source
-            # or drafting one section. Override with THESIS_RECURSION_LIMIT.
             "recursion_limit": _recursion_limit(),
         }
-        result = agent.invoke(
+        signatures: list[str] = []
+        seen_msg_count = 0
+        last_state: dict = {}
+        for state in agent.stream(
             {"messages": [{"role": "user", "content": prompt}]},
             config=cfg,
-        )
-    msgs = result.get("messages", [])
+            stream_mode="values",
+        ):
+            last_state = state
+            msgs = state.get("messages", []) or []
+            for m in msgs[seen_msg_count:]:
+                if isinstance(m, AIMessage):
+                    for tc in (m.tool_calls or []):
+                        signatures.append(_tool_call_signature(tc))
+                        offender = _scan_for_loop(signatures)
+                        if offender is not None:
+                            raise ToolCallLoopError(
+                                f"agent repeated the same tool call 3+ times "
+                                f"in the last 10 steps: {offender}. Aborting "
+                                f"turn to prevent runaway spend. This usually "
+                                f"means the model is weak for this task or "
+                                f"hit a refusal it can't recover from (e.g. "
+                                f"write_file on an existing path — should use "
+                                f"edit_file instead)."
+                            )
+            seen_msg_count = len(msgs)
+
+    msgs = last_state.get("messages", [])
     if not msgs:
         return ""
     last = msgs[-1]
-    # LangChain message objects or plain dicts
     return getattr(last, "content", None) or last.get("content", "")

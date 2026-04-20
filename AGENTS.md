@@ -209,9 +209,11 @@ For each entry in `research/raw/_index.json` with `status == "pending"`:
 8. **Flip status** in `research/raw/_index.json` from `pending` to `curated`
    and list the wiki pages you produced in `curated_pages`.
 
-A typical ingest for one paper should touch **5-15 pages**. If you only
-touched the source-summary page, you missed the point of the wiki pattern —
-the knowledge must compound into entities and concepts.
+A typical ingest for one substantive paper touches **5-15 pages**. For a
+narrow source (a short note, a single-topic article) 2-3 pages is fine.
+Report honestly what you did — do not retry or restart to hit a page
+count. The goal is to let entities and concepts compound over time; one
+thin ingest today gets enriched by the next related source.
 
 ### Query (chat requests that require real research — not just routine Q&A)
 

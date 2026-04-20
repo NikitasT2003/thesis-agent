@@ -895,19 +895,25 @@ def curate(
     tid = thread or read_thread_id()
     write_thread_id(tid)
     _run(
-        "Curate all pending sources per AGENTS.md using the LLM Wiki "
-        "pattern. For each entry in `research/raw/_index.json` with "
-        "status 'pending', delegate to the wiki-curator subagent. A "
-        "single ingest must touch multiple pages: write the source "
-        "summary under `research/wiki/sources/`, create or extend "
-        "relevant entity pages under `research/wiki/entities/`, create "
-        "or extend relevant concept pages under `research/wiki/concepts/`, "
-        "update `research/wiki/index.md`, append a grep-friendly entry "
-        "to `research/wiki/log.md` (`## [YYYY-MM-DD] ingest | <title>`), "
-        "flag conflicts (flag only — do not merge), maintain reciprocal "
-        "cross-references, then flip status to 'curated' and list the "
-        "touched pages in `curated_pages`. If a source only touched 1-2 "
-        "pages, you missed the point of the wiki pattern — redo it.",
+        "Curate pending sources per AGENTS.md. Steps, in order, each "
+        "done at most once:\n"
+        "1. Read `research/raw/_index.json` to find entries with "
+        "status 'pending'. If none, reply 'nothing to curate' and STOP.\n"
+        "2. For each pending source, read the raw markdown ONCE.\n"
+        "3. For each source, write exactly one file per path:\n"
+        "   - `research/wiki/sources/<filename>.md` (source summary)\n"
+        "   - `research/wiki/entities/<slug>.md` for each distinct entity\n"
+        "   - `research/wiki/concepts/<slug>.md` for each distinct concept\n"
+        "   Use `write_file` for new paths, `edit_file` for paths that "
+        "already exist. Never retry a refused `write_file`; switch to "
+        "`edit_file` with a specific `old_string`.\n"
+        "4. Use `edit_file` once on `research/wiki/index.md` to add new "
+        "entries.\n"
+        "5. Use `edit_file` once on `research/wiki/log.md` to append "
+        "`## [YYYY-MM-DD] ingest | <title>`.\n"
+        "6. Use `edit_file` once on `research/raw/_index.json` to change "
+        "'pending' to 'curated' for each processed source.\n"
+        "7. Reply with a one-line summary and STOP. No further tool calls.",
         tid,
     )
 
@@ -920,8 +926,16 @@ def style(
     tid = thread or read_thread_id()
     write_thread_id(tid)
     _run(
-        "Invoke the style-learner skill. Read every file under `style/samples/` "
-        "and produce/update `style/STYLE.md` as a prescriptive style guide.",
+        "Compile a style guide. Steps, each done at most once:\n"
+        "1. `ls` `/style/samples/` to list files.\n"
+        "2. `read_file` each sample (each file at most once).\n"
+        "3. Write `/style/STYLE.md` with `write_file` if it does not "
+        "exist, or `edit_file` if it does. Produce a prescriptive style "
+        "guide per the `style-learner` skill (voice, sentence rhythm, "
+        "lexicon, POV, citation placement, structure).\n"
+        "4. Reply with a one-line summary of what you wrote and STOP. "
+        "Do not re-read files. Do not make further tool calls after the "
+        "write.",
         tid,
     )
 
