@@ -229,9 +229,9 @@ _DEFAULTS: dict[str, ModelConfig] = {
         researcher="anthropic:claude-haiku-4-5-20251001",
     ),
     "openrouter": ModelConfig(
-        drafter="z-ai/glm-5.1",
-        curator="z-ai/glm-5.1",
-        researcher="google/gemma-4-31b-it",
+        drafter="google/gemma-4-31b-it:free",
+        curator="google/gemma-4-31b-it:free",
+        researcher="google/gemma-4-31b-it:free",
     ),
 }
 

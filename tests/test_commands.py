@@ -423,6 +423,20 @@ class _StubAgent:
         self.calls.append((msg, tid))
         return {"messages": [{"role": "assistant", "content": self._reply}]}
 
+    def stream(self, payload: dict, *, config=None, stream_mode=None):
+        """Minimal stream emulation for the TUI chat: yield two states —
+        initial (just the user message) and final (user + assistant reply).
+        The chat renderer checks for langchain AIMessage instances, so we
+        produce real ones here."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        msg = payload["messages"][-1]["content"]
+        tid = (config or {}).get("configurable", {}).get("thread_id", "?")
+        self.calls.append((msg, tid))
+        human = HumanMessage(content=msg)
+        yield {"messages": [human]}
+        yield {"messages": [human, AIMessage(content=self._reply)]}
+
 
 def _patch_build_agent(monkeypatch, stub: _StubAgent):
     @contextmanager
@@ -486,6 +500,8 @@ class TestChat:
     def test_agent_error_surfaces_then_loop_continues(self, ws: Path, monkeypatch):
         _init(ws)
 
+        from langchain_core.messages import AIMessage, HumanMessage
+
         class Flaky:
             def __init__(self):
                 self.n = 0
@@ -495,6 +511,14 @@ class TestChat:
                 if self.n == 1:
                     raise RuntimeError("boom")
                 return {"messages": [{"role": "assistant", "content": "recovered"}]}
+
+            def stream(self, payload, *, config=None, stream_mode=None):
+                self.n += 1
+                if self.n == 1:
+                    raise RuntimeError("boom")
+                human = HumanMessage(content=payload["messages"][-1]["content"])
+                yield {"messages": [human]}
+                yield {"messages": [human, AIMessage(content="recovered")]}
 
         flaky = Flaky()
         _patch_build_agent(monkeypatch, flaky)

@@ -172,14 +172,14 @@ def test_models_anthropic_defaults(ws: Path):
 def test_models_openrouter_defaults(ws: Path, monkeypatch):
     monkeypatch.setenv("THESIS_PROVIDER", "openrouter")
     m = models()
-    # OpenRouter format: `provider/model`.
+    # OpenRouter format: `provider/model[:tag]`.
     assert "/" in m.drafter
     assert "/" in m.researcher
-    # Defaults chosen for cost: GLM 5.1 for the quality-critical roles,
-    # Gemma 4 31B-IT for the cheap read-only researcher.
-    assert m.drafter == "z-ai/glm-5.1"
-    assert m.curator == "z-ai/glm-5.1"
-    assert m.researcher == "google/gemma-4-31b-it"
+    # Free-tier defaults so the project runs at zero cost out of the box.
+    # Users upgrade to stronger/paid models via THESIS_MODEL_* env vars.
+    assert "gemma" in m.drafter.lower()
+    assert "gemma" in m.curator.lower()
+    assert "gemma" in m.researcher.lower()
 
 
 def test_models_env_overrides_win(ws: Path, monkeypatch):

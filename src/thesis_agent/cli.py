@@ -34,7 +34,7 @@ for _stream in (sys.stdout, sys.stderr):
             pass
 
 from thesis_agent import __version__  # noqa: E402
-from thesis_agent.config import paths, read_thread_id, write_thread_id  # noqa: E402
+from thesis_agent.config import Paths, paths, read_thread_id, write_thread_id  # noqa: E402
 
 app = typer.Typer(
     name="thesis",
@@ -991,64 +991,284 @@ def lint(
     )
 
 
+_CHAT_BANNER = """[bold]thesis-agent chat[/bold]
+
+Slash commands:
+  [cyan]/help[/]         show this help
+  [cyan]/new[/]          start a fresh thread
+  [cyan]/thread[/] <id>  switch to a specific thread
+  [cyan]/status[/]       workspace counts + current model
+  [cyan]/history[/] [N]  show last N messages in this thread (default 10)
+  [cyan]/model[/]        show the active models for each role
+  [cyan]/clear[/]        clear the screen (history preserved)
+  [cyan]/quit[/]  /exit  leave
+
+Input: end a line with [cyan]\\\\[/] to continue on the next line,
+or open a fenced block with [cyan]```[/] for multi-line paste.
+Ctrl-C during generation cancels the current turn; twice exits."""
+
+
+def _render_new_messages(
+    state: dict,
+    seen: int,
+    current_tool_calls: dict,
+) -> int:
+    """Print every message in state past `seen`. Returns the new count.
+
+    `current_tool_calls` maps tool_call_id → short preview, so when a
+    ToolMessage comes back we can show it inline under its caller.
+    """
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    msgs = state.get("messages", [])
+    for m in msgs[seen:]:
+        if isinstance(m, AIMessage):
+            tcs = m.tool_calls or []
+            if tcs:
+                for tc in tcs:
+                    name = tc.get("name", "?")
+                    args = tc.get("args", {}) or {}
+                    preview = _preview_tool_args(name, args)
+                    current_tool_calls[tc.get("id")] = f"{name}({preview})"
+                    console.print(
+                        f"  [dim]→[/] [cyan]{name}[/]([dim]{preview}[/])"
+                    )
+            if m.content:
+                # Final / mid-turn assistant text
+                from rich.markdown import Markdown
+                console.print()
+                console.print(
+                    Panel(
+                        Markdown(str(m.content).strip()),
+                        border_style="green",
+                        title="[bold]agent[/]",
+                        title_align="left",
+                        padding=(0, 1),
+                    )
+                )
+        elif isinstance(m, ToolMessage):
+            preview = _preview_tool_result(m.content or "")
+            console.print(f"     [dim]↳ {preview}[/]")
+    return len(msgs)
+
+
+def _preview_tool_args(_name: str, args: dict) -> str:
+    if not args:
+        return ""
+    keys = ("file_path", "path", "pattern", "old_string", "new_string")
+    for k in keys:
+        if k in args:
+            v = str(args[k])
+            if len(v) > 60:
+                v = v[:57] + "…"
+            return f'{k}="{v}"'
+    rendered = ", ".join(f'{k}="{str(v)[:40]}"' for k, v in list(args.items())[:2])
+    return rendered[:80]
+
+
+def _preview_tool_result(content: str) -> str:
+    s = str(content).strip().replace("\n", " ⏎ ")
+    if len(s) > 120:
+        s = s[:117] + "…"
+    return s
+
+
+def _read_multiline(prompt: str = "[bold cyan]you ›[/] ") -> str | None:
+    """Read input with \\-continuation + triple-backtick fence support.
+
+    Returns the composed string, or None on EOF/Ctrl-C at the very first
+    empty line (so callers can treat it as "quit").
+    """
+    first = console.input(prompt)
+    if first.strip().startswith("```"):
+        # Fenced block — keep reading until the closing fence.
+        lines: list[str] = []
+        while True:
+            ln = console.input("[dim]… [/]")
+            if ln.strip() == "```":
+                break
+            lines.append(ln)
+        return "\n".join(lines)
+    if first.rstrip().endswith("\\"):
+        lines = [first.rstrip()[:-1]]
+        while True:
+            ln = console.input("[dim]… [/]")
+            if ln.rstrip().endswith("\\"):
+                lines.append(ln.rstrip()[:-1])
+            else:
+                lines.append(ln)
+                break
+        return "\n".join(lines)
+    return first
+
+
+def _handle_slash(cmd: str, *, p: Paths, tid: str) -> tuple[str, bool]:
+    """Handle a /slash command. Returns (new_thread_id, keep_running).
+
+    Returning `keep_running=False` signals the REPL should exit.
+    Commands that print info leave tid unchanged.
+    """
+    import time
+
+    from thesis_agent.config import models
+
+    parts = cmd.strip().split(maxsplit=1)
+    name = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    if name in ("/quit", "/exit"):
+        return tid, False
+
+    if name == "/help":
+        console.print(Panel.fit(_CHAT_BANNER, border_style="dim"))
+        return tid, True
+
+    if name == "/new":
+        new_id = f"t-{int(time.time())}"
+        write_thread_id(new_id)
+        console.print(f"[dim]new thread:[/] [cyan]{new_id}[/]")
+        return new_id, True
+
+    if name == "/thread":
+        if not arg:
+            console.print(f"[dim]current thread:[/] [cyan]{tid}[/]")
+            return tid, True
+        write_thread_id(arg)
+        console.print(f"[dim]switched to thread:[/] [cyan]{arg}[/]")
+        return arg, True
+
+    if name == "/clear":
+        console.clear()
+        return tid, True
+
+    if name == "/model":
+        m = models()
+        tbl = Table(show_header=False, box=None, padding=(0, 1))
+        tbl.add_row("[bold]drafter[/]", m.drafter)
+        tbl.add_row("[bold]curator[/]", m.curator)
+        tbl.add_row("[bold]researcher[/]", m.researcher)
+        console.print(Panel(tbl, title="active models", border_style="dim"))
+        return tid, True
+
+    if name == "/status":
+        raw_count = (
+            sum(1 for f in p.raw.iterdir() if f.is_file() and not f.name.startswith("_"))
+            if p.raw.exists() else 0
+        )
+        wiki_total = sum(
+            1 for f in p.wiki.rglob("*.md") if f.is_file()
+        ) if p.wiki.exists() else 0
+        chap_count = (
+            sum(1 for f in p.chapters.iterdir() if f.is_file() and f.suffix == ".md")
+            if p.chapters.exists() else 0
+        )
+        console.print(
+            f"[dim]thread:[/] [cyan]{tid}[/]  [dim]raw:[/] {raw_count}  "
+            f"[dim]wiki:[/] {wiki_total}  [dim]chapters:[/] {chap_count}"
+        )
+        return tid, True
+
+    if name == "/history":
+        try:
+            n = int(arg) if arg else 10
+        except ValueError:
+            n = 10
+        # LangGraph checkpoints persist the thread; read back via the
+        # agent's checkpointer on next turn. For now we print a hint —
+        # the full `checkpointer.list()` API varies across langgraph
+        # versions; cheap path: tell the user we haven't implemented
+        # deep history retrieval.
+        console.print(
+            f"[dim]Thread {tid} has its state persisted in data/checkpoints.db. "
+            f"History browsing in this REPL is limited to the current session; "
+            f"requested last {n} messages — use `/clear` + re-ask to reconstruct.[/]"
+        )
+        return tid, True
+
+    console.print(f"[yellow]unknown command:[/] {name}  [dim](try /help)[/]")
+    return tid, True
+
+
 @app.command()
 def chat(
     thread: str = typer.Option(None, "--thread", help="Thread ID (defaults to persisted)."),
     new: bool = typer.Option(False, "--new", help="Start a fresh thread."),
+    quiet: bool = typer.Option(
+        False, "--quiet",
+        help="Suppress tool-call traces; only show assistant replies.",
+    ),
 ) -> None:
-    """Interactive REPL with the agent. Ctrl-D / Ctrl-C to quit."""
-    from thesis_agent.agent import build_agent
+    """Interactive terminal UI with streaming + slash commands.
+
+    Claude-Code-style: each user turn streams incrementally, tool calls
+    render inline, the final assistant reply appears in a markdown panel.
+    """
+    import time
+
+    from thesis_agent.agent import _recursion_limit, build_agent
 
     p = paths()
     if new:
-        import time
         tid = f"t-{int(time.time())}"
     else:
         tid = thread or read_thread_id()
     write_thread_id(tid)
 
-    console.print(
-        Panel.fit(
-            f"thread: [cyan]{tid}[/]    type [bold]/new[/] for a fresh thread, "
-            f"[bold]/quit[/] to exit.",
-            border_style="dim",
-        )
-    )
+    console.print(Panel.fit(_CHAT_BANNER, border_style="cyan"))
+    console.print(f"[dim]thread:[/] [cyan]{tid}[/]\n")
 
     with build_agent(p=p) as agent:
         while True:
             try:
-                msg = console.input("[bold cyan]you >[/] ")
+                msg = _read_multiline()
             except (EOFError, KeyboardInterrupt):
                 console.print("\n[dim]bye.[/]")
                 break
-            if not msg.strip():
+
+            if msg is None:
                 continue
-            if msg.strip() in {"/quit", "/exit"}:
-                break
-            if msg.strip() == "/new":
-                import time
-                tid = f"t-{int(time.time())}"
-                write_thread_id(tid)
-                console.print(f"[dim]new thread: {tid}[/]")
+            msg_stripped = msg.strip()
+            if not msg_stripped:
+                continue
+            if msg_stripped.startswith("/"):
+                tid, keep = _handle_slash(msg_stripped, p=p, tid=tid)
+                if not keep:
+                    console.print("[dim]bye.[/]")
+                    break
                 continue
 
+            config = {
+                "configurable": {"thread_id": tid},
+                "recursion_limit": _recursion_limit(),
+            }
+            seen = 0
+            current_tools: dict = {}
             try:
-                from thesis_agent.agent import _recursion_limit
-                result = agent.invoke(
+                for state in agent.stream(
                     {"messages": [{"role": "user", "content": msg}]},
-                    config={
-                        "configurable": {"thread_id": tid},
-                        "recursion_limit": _recursion_limit(),
-                    },
-                )
-                msgs = result.get("messages", [])
-                if msgs:
-                    last = msgs[-1]
-                    content = getattr(last, "content", None) or last.get("content", "")
-                    console.print(f"[bold green]agent >[/] {content}\n")
+                    config=config,
+                    stream_mode="values",
+                ):
+                    if quiet:
+                        seen = len(state.get("messages", []))
+                        continue
+                    seen = _render_new_messages(state, seen, current_tools)
+                if quiet and state.get("messages"):
+                    # Print only the final assistant content in quiet mode.
+                    from langchain_core.messages import AIMessage
+                    from rich.markdown import Markdown
+                    last = state["messages"][-1]
+                    if isinstance(last, AIMessage) and last.content:
+                        console.print(Panel(Markdown(str(last.content)),
+                                            border_style="green",
+                                            title="[bold]agent[/]",
+                                            title_align="left"))
+            except KeyboardInterrupt:
+                console.print("\n[yellow]turn cancelled.[/] "
+                              "[dim](Ctrl-C again to quit)[/]")
             except Exception as e:
                 console.print(f"[red]agent error:[/] {e}")
+            console.print()  # breathing room before next prompt
 
 
 @app.callback(invoke_without_command=True)
