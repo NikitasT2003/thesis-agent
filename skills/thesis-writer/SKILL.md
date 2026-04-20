@@ -1,6 +1,13 @@
 ---
 name: thesis-writer
-description: Use this skill when the user asks you to draft, write, or expand a thesis section, chapter, paragraph, or the whole thesis. Enforces the grounding rule (every factual claim cites an indexed source), loads the user's writing style from `style/STYLE.md`, navigates the wiki for supporting material, and writes to `thesis/chapters/<NN>.md` matching `thesis/outline.md` numbering. Triggers "draft", "write section", "expand outline", "write chapter", "flesh out 2.1", "continue writing".
+description: >
+  Use this skill when the user asks you to draft, write, or expand a thesis
+  section, chapter, paragraph, or the whole thesis. Enforces the grounding
+  rule (every factual claim cites an indexed source), loads the user's writing
+  style from `style/STYLE.md`, navigates the wiki for supporting material, and
+  writes to `thesis/chapters/<NN>.md` matching `thesis/outline.md` numbering.
+  Triggers "draft", "write section", "expand outline", "write chapter",
+  "flesh out 2.1", "continue writing".
 ---
 
 # thesis-writer

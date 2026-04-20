@@ -1,6 +1,13 @@
 ---
 name: wiki-curator
-description: Use this skill to build or update the research wiki from newly-ingested raw sources following the Karpathy LLM Wiki pattern, one page per source file. Read the template from AGENTS.md and produce `research/wiki/<source_stem>.md` for every entry in `research/raw/_index.json` with `status: pending`, update `research/wiki/index.md`, flag contradictions (flag only — no merging), then flip status to `curated`. Triggers include "curate", "build wiki", "compile wiki", "update the wiki", "after ingest".
+description: >
+  Use this skill to build or update the research wiki from newly-ingested raw
+  sources following the Karpathy LLM Wiki pattern, one page per source file.
+  Read the template from AGENTS.md and produce `research/wiki/<source_stem>.md`
+  for every entry in `research/raw/_index.json` with status "pending", update
+  `research/wiki/index.md`, flag contradictions (flag only, no merging), then
+  flip status to "curated". Triggers include "curate", "build wiki",
+  "compile wiki", "update the wiki", "after ingest".
 ---
 
 # wiki-curator

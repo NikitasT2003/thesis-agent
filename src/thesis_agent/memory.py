@@ -39,32 +39,47 @@ def make_checkpointer(paths: Paths) -> Iterator[Any]:
         conn.close()
 
 
+def _try_import_sqlite_store():
+    """Return SqliteStore class if the installed langgraph ships one, else None.
+
+    Isolated from the context manager so any import/attribute failure can't
+    get mixed up with exceptions thrown into the generator at yield time —
+    that mix produces 'generator didn't stop after throw()'.
+    """
+    try:
+        from langgraph.store.sqlite import SqliteStore  # type: ignore
+        return SqliteStore
+    except Exception:
+        return None
+
+
 @contextmanager
 def make_store(paths: Paths) -> Iterator[Any]:
     """Yield a LangGraph Store for long-term cross-thread memory.
 
     Prefer SqliteStore when the installed langgraph ships it; fall back to
-    InMemoryStore so the agent still works on older installs (long-term memory
-    just won't persist between processes until the user upgrades).
+    InMemoryStore so the agent still works on older installs (long-term
+    memory just won't persist between processes until the user upgrades).
     """
-    try:
-        from langgraph.store.sqlite import SqliteStore  # type: ignore
+    SqliteStoreCls = _try_import_sqlite_store()
 
-        _ensure_parent(paths.store_db)
-        conn = sqlite3.connect(str(paths.store_db), check_same_thread=False)
-        try:
-            store = SqliteStore(conn)
-            try:
-                store.setup()
-            except Exception:
-                pass
-            yield store
-        finally:
-            conn.close()
-    except Exception:
+    if SqliteStoreCls is None:
         from langgraph.store.memory import InMemoryStore
 
         yield InMemoryStore()
+        return
+
+    _ensure_parent(paths.store_db)
+    conn = sqlite3.connect(str(paths.store_db), check_same_thread=False)
+    try:
+        store = SqliteStoreCls(conn)
+        try:
+            store.setup()
+        except Exception:
+            pass
+        yield store
+    finally:
+        conn.close()
 
 
 @contextmanager

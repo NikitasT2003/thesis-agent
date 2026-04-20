@@ -1,6 +1,12 @@
 ---
 name: ingest-sources
-description: Use this skill when the user asks to ingest, add, index, or import new source material (PDFs, DOCX, EPUB, Markdown, URLs) into the thesis research library, or after they have dropped new files into `research/raw/`. Explains how to run the deterministic ingest CLI and follow up by triggering curation. Triggers include phrases like "ingest", "add source", "index these", "import sources", "update knowledge base", "I just dropped files in raw".
+description: >
+  Use this skill when the user asks to ingest, add, index, or import new source
+  material (PDFs, DOCX, EPUB, Markdown, URLs) into the thesis research library,
+  or after they have dropped new files into `research/raw/`. Explains how to run
+  the deterministic ingest CLI and follow up by triggering curation. Triggers
+  include phrases like "ingest", "add source", "index these", "import sources",
+  "update knowledge base", "I just dropped files in raw".
 ---
 
 # ingest-sources

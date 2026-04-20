@@ -68,6 +68,23 @@ class TestSkillFile:
     def test_file_exists(self, skill: str):
         assert self._file(skill).exists()
 
+    def test_frontmatter_parses_with_real_yaml(self, skill: str):
+        """Regression: an earlier description contained `status: pending`
+        which PyYAML parsed as a new mapping key, crashing the agent at
+        boot. Every SKILL.md must parse cleanly with yaml.safe_load."""
+        import yaml
+
+        text = self._file(skill).read_text(encoding="utf-8")
+        m = FRONTMATTER_RE.match(text)
+        assert m, f"{skill}: no YAML frontmatter"
+        data = yaml.safe_load(m.group(1))
+        assert isinstance(data, dict), f"{skill}: frontmatter did not parse to a mapping"
+        assert data.get("name") == skill
+        assert "description" in data
+        assert isinstance(data["description"], str)
+        # Description must be substantive enough to be a useful trigger.
+        assert len(data["description"]) >= 80
+
     def test_has_valid_frontmatter(self, skill: str):
         text = self._file(skill).read_text(encoding="utf-8")
         fm = _parse_frontmatter(text)
@@ -79,9 +96,13 @@ class TestSkillFile:
 
     def test_frontmatter_only_allowed_keys(self, skill: str):
         """deepagents spec: only name/description/license/compatibility/allowed-tools/metadata."""
+        import yaml
+
         allowed = {"name", "description", "license", "compatibility", "allowed-tools", "metadata"}
-        fm = _parse_frontmatter(self._file(skill).read_text(encoding="utf-8"))
-        unexpected = set(fm) - allowed
+        m = FRONTMATTER_RE.match(self._file(skill).read_text(encoding="utf-8"))
+        assert m
+        data = yaml.safe_load(m.group(1))
+        unexpected = set(data) - allowed
         assert not unexpected, f"{skill}: unexpected frontmatter keys: {unexpected}"
 
     def test_body_starts_after_frontmatter(self, skill: str):

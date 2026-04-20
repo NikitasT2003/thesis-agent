@@ -1,6 +1,13 @@
 ---
 name: citation-linter
-description: Use this skill when the user asks to lint, check, verify, audit, or review citations in thesis chapters. Scans a chapter (or all chapters) for `[src:<filename>]` markers, verifies each target exists under `research/raw/`, flags paragraphs making factual claims without any citation, and reports file+line issues in a short actionable table. Does not auto-edit unless explicitly asked. Triggers "lint citations", "check citations", "audit grounding", "verify sources", "review chapter".
+description: >
+  Use this skill when the user asks to lint, check, verify, audit, or review
+  citations in thesis chapters. Scans a chapter (or all chapters) for
+  `[src:<filename>]` markers, verifies each target exists under `research/raw/`,
+  flags paragraphs making factual claims without any citation, and reports file
+  and line issues in a short actionable table. Does not auto-edit unless
+  explicitly asked. Triggers "lint citations", "check citations",
+  "audit grounding", "verify sources", "review chapter".
 ---
 
 # citation-linter

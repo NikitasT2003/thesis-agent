@@ -1,6 +1,13 @@
 ---
 name: style-learner
-description: Use this skill when the user asks you to learn their writing style, build/update the style guide, or when they have added new samples to `style/samples/`. Reads every file in `style/samples/`, extracts voice and mechanical patterns (sentence length, hedging, jargon density, POV, citation placement), and writes a prescriptive `style/STYLE.md` that the drafter will follow. Triggers "learn my style", "update style guide", "analyse my writing", "I added samples", "compile style".
+description: >
+  Use this skill when the user asks you to learn their writing style,
+  build/update the style guide, or when they have added new samples to
+  `style/samples/`. Reads every file in `style/samples/`, extracts voice and
+  mechanical patterns (sentence length, hedging, jargon density, POV, citation
+  placement), and writes a prescriptive `style/STYLE.md` that the drafter will
+  follow. Triggers "learn my style", "update style guide", "analyse my writing",
+  "I added samples", "compile style".
 ---
 
 # style-learner
