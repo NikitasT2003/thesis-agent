@@ -123,7 +123,14 @@ def build_agent(
 
         if FilesystemBackend is not None:
             try:
-                kwargs["backend"] = FilesystemBackend(root_dir=str(p.root))
+                # `virtual_mode=True` makes the agent see a clean virtual
+                # filesystem rooted at `/` that maps onto `root_dir` on disk.
+                # Pinned explicitly because deepagents will change the default
+                # in 0.5.0 (per its DeprecationWarning).
+                kwargs["backend"] = FilesystemBackend(
+                    root_dir=str(p.root),
+                    virtual_mode=True,
+                )
             except Exception:
                 pass  # library will use its default
 
