@@ -119,11 +119,79 @@ def provider() -> str:
     return (os.environ.get("THESIS_PROVIDER") or "anthropic").strip().lower()
 
 
+_API_KEY_VARS: tuple[str, ...] = (
+    "ANTHROPIC_API_KEY",
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_BASE_URL",
+    "OPENROUTER_SITE_URL",
+    "OPENROUTER_SITE_NAME",
+    "THESIS_PROVIDER",
+    "THESIS_MODEL_DRAFTER",
+    "THESIS_MODEL_CURATOR",
+    "THESIS_MODEL_RESEARCHER",
+)
+
+
+def _parse_env_file(path) -> dict[str, str]:
+    """Minimal .env parser returning {name: raw_value}. No expansion."""
+    out: dict[str, str] = {}
+    if not path.exists():
+        return out
+    for line in path.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, _, v = s.partition("=")
+        out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
 def load_env(required_api_key: bool = True) -> None:
-    """Load .env from workspace and (optionally) verify the right key is set."""
+    """Load `.env` and make sure its values win over stale shell env vars.
+
+    Rationale: the setup wizard writes an explicit, freshly-validated value
+    into `.env`. If the user's shell also has the same variable exported
+    from an earlier session (e.g. a rotated key), `python-dotenv`'s default
+    behaviour would silently keep the shell value and the new key would
+    appear to do nothing. We therefore:
+      1. Parse `.env` ourselves.
+      2. For every variable we own (API keys + model overrides), if the
+         file disagrees with the shell, `.env` wins — and we print a one-line
+         notice so the user knows what happened.
+      3. Fall through to `load_dotenv` for anything else in the file.
+    """
     env = paths().env_file
+    file_values = _parse_env_file(env)
+
+    overridden: list[str] = []
+    for name in _API_KEY_VARS:
+        if name not in file_values:
+            continue
+        shell_val = os.environ.get(name)
+        if shell_val is not None and shell_val != file_values[name]:
+            overridden.append(name)
+        os.environ[name] = file_values[name]
+
+    # Load anything else from .env without clobbering shell env.
     if env.exists():
-        load_dotenv(env)
+        load_dotenv(env, override=False)
+
+    if overridden:
+        # Best-effort notice so the user understands why a freshly-saved
+        # key is suddenly being used instead of their shell export.
+        msg = (
+            "thesis-agent: .env values overrode shell env for "
+            f"{', '.join(overridden)}. "
+            "To use your shell values instead, remove those lines from .env."
+        )
+        # Only print when running from a TTY to avoid spamming CI logs.
+        try:
+            import sys
+            if sys.stderr.isatty():
+                print(msg, file=sys.stderr)
+        except Exception:
+            pass
+
     if not required_api_key:
         return
     prov = provider()

@@ -117,9 +117,44 @@ def test_load_env_reads_dotenv_file(ws: Path, monkeypatch):
     # Ensure the value isn't already in env
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     load_env(required_api_key=True)
-    # python-dotenv sets os.environ
     import os
     assert os.environ.get("OPENROUTER_API_KEY") == "sk-or-xxx"
+
+
+def test_load_env_dotenv_overrides_shell_for_api_keys(ws: Path, monkeypatch):
+    """Regression: a stale shell export used to override a freshly-saved
+    .env value, leaving the agent with a bad key. `.env` now wins for
+    the variables the wizard owns."""
+    (ws / ".env").write_text(
+        "THESIS_PROVIDER=openrouter\nOPENROUTER_API_KEY=sk-or-fresh-from-env\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-stale-from-shell")
+    load_env(required_api_key=True)
+    import os
+    assert os.environ.get("OPENROUTER_API_KEY") == "sk-or-fresh-from-env"
+
+
+def test_load_env_keeps_shell_value_when_dotenv_missing_key(ws: Path, monkeypatch):
+    """If .env doesn't mention the variable, the shell value must be
+    preserved — we only override for vars we actually own."""
+    (ws / ".env").write_text("THESIS_PROVIDER=anthropic\n", encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-from-shell-only")
+    load_env(required_api_key=True)
+    import os
+    assert os.environ.get("ANTHROPIC_API_KEY") == "sk-ant-from-shell-only"
+
+
+def test_load_env_preserves_unrelated_shell_vars(ws: Path, monkeypatch):
+    """Shell vars we don't own (PATH, HOME, etc.) must not be touched."""
+    (ws / ".env").write_text(
+        "THESIS_PROVIDER=anthropic\nANTHROPIC_API_KEY=sk-ant-x\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SOME_UNRELATED_VAR", "keep-me")
+    load_env(required_api_key=True)
+    import os
+    assert os.environ.get("SOME_UNRELATED_VAR") == "keep-me"
 
 
 # ---------------------------------------------------------------------------

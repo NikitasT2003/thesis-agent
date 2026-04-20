@@ -85,6 +85,12 @@ def ws(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(cli, "_copy_examples", lambda **kw: {
         "copied": 0, "overwritten": 0, "already_present": 0, "source_missing": 0,
     })
+    # Rich collapses output inside CliRunner's tiny default terminal. Force
+    # a wide console so assertions can see the whole transcript.
+    from rich.console import Console
+    monkeypatch.setattr(cli, "console", Console(
+        width=240, force_terminal=False, legacy_windows=False, soft_wrap=False,
+    ))
     return tmp_path
 
 
@@ -163,24 +169,28 @@ class TestKeySourceAttribution:
         assert "1234" in result.stdout
         assert "in-dotenv" not in result.stdout
 
-    def test_warns_when_shell_overrides_dotenv(self, ws: Path, monkeypatch):
-        """Critical UX case: user says 'no, use a different key'. If shell
-        still has the old one exported, it will *win* at runtime. Wizard
-        must warn + show how to unset."""
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-stale-aaaa1234")
+    def test_warns_when_shell_and_dotenv_differ(self, ws: Path, monkeypatch):
+        """Both sources have (different) values. Wizard must flag the
+        mismatch in its initial 'found existing key' line — .env wins
+        at runtime, shell export is ignored."""
+        (ws / ".env").write_text(
+            "THESIS_PROVIDER=openrouter\nOPENROUTER_API_KEY=sk-or-v1-in-env-aaaa\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-stale-shell-bbbb")
         _install_fake_q(monkeypatch, [
             "openrouter",
-            False,                              # don't reuse — enter fresh
-            "sk-or-v1-fresh-brand-new-bbbb5678",  # password
-            False,                              # attribution headers
+            True,    # reuse (the .env one)
+            False,   # attribution headers
             True, False,
         ])
         result = runner.invoke(cli.app, ["setup"])
         assert result.exit_code == 0, result.stdout
-        # The warning must name the shell + the env var + show how to unset.
-        assert "shell env" in result.stdout.lower()
-        assert "precedence" in result.stdout.lower() or "override" in result.stdout.lower()
-        assert "unset OPENROUTER_API_KEY" in result.stdout or "Remove-Item" in result.stdout
+        out = result.stdout.lower()
+        # The mismatch must be flagged and the outcome named.
+        assert "shell" in out
+        assert "different value" in out
+        assert "wins" in out or "ignored" in out
 
     def test_no_key_anywhere_shows_no_source(self, ws: Path, monkeypatch):
         _install_fake_q(monkeypatch, [
@@ -193,8 +203,11 @@ class TestKeySourceAttribution:
         assert "shell environment" not in result.stdout
         assert "found ANTHROPIC_API_KEY" not in result.stdout
 
-    def test_shell_env_takes_precedence_over_dotenv(self, ws: Path, monkeypatch):
-        """When both are present, shell wins (matches python-dotenv runtime)."""
+    def test_dotenv_takes_precedence_over_shell_env(self, ws: Path, monkeypatch):
+        """When both are present, .env wins — this matches the runtime
+        override in `load_env` so the wizard shows the key that will
+        actually be used. Previously the wizard said 'shell environment'
+        but the agent still failed at runtime because .env was stale."""
         (ws / ".env").write_text(
             "THESIS_PROVIDER=openrouter\nOPENROUTER_API_KEY=sk-or-v1-in-env-aaaa\n",
             encoding="utf-8",
@@ -207,10 +220,11 @@ class TestKeySourceAttribution:
         ])
         result = runner.invoke(cli.app, ["setup"])
         assert result.exit_code == 0, result.stdout
-        # Source must be shell (not .env)
-        assert "shell environment" in result.stdout
-        assert "1111" in result.stdout  # shell key's preview wins
-        assert "aaaa" not in result.stdout  # .env key hidden
+        # Source must be .env, not shell.
+        assert ".env" in result.stdout
+        assert "aaaa" in result.stdout  # .env preview shown
+        # Plus a hint that the shell value is different and being ignored.
+        assert "different value" in result.stdout.lower() or "ignored" in result.stdout.lower()
 
 
 # ---------------------------------------------------------------------------

@@ -478,19 +478,28 @@ def _resolve_api_key(
     shell_key = (os.environ.get(info["key_env"]) or "").strip() or None
     env_key = _read_env_var(info["key_env"])
 
-    # Source attribution: shell env wins at runtime (it overrides .env when
-    # the agent boots via python-dotenv), so honour that precedence here too.
-    if shell_key:
+    # Source attribution: .env wins at runtime (see `load_env` in config.py —
+    # we explicitly override shell env for our own vars so a freshly-saved
+    # key is always the one in use). Match that precedence in the wizard.
+    if env_key:
+        existing = env_key
+        source = "the .env file in this workspace"
+        if shell_key and shell_key != env_key:
+            hint = (
+                "Your shell also has this variable exported, but it is a "
+                "different value. .env will win at runtime — the shell export "
+                "is ignored."
+            )
+        else:
+            hint = ""
+    elif shell_key:
         existing = shell_key
         source = "shell environment"
         hint = (
             "Your shell has this variable exported (likely from your profile "
-            "or a parent process). It will override any value in .env."
+            "or a parent process). It will be used until you save a key with "
+            "`thesis setup` (which writes to .env and takes precedence)."
         )
-    elif env_key:
-        existing = env_key
-        source = "the .env file in this workspace"
-        hint = ""
     else:
         existing = None
         source = ""
@@ -520,17 +529,15 @@ def _resolve_api_key(
         if use_existing:
             console.print("  [green]reusing existing key.[/]")
             return existing
-        # User said No. Warn them about shell-env precedence before taking a new key.
-        if shell_key:
+        # Brief note so the user understands what the next step does.
+        if shell_key and shell_key != existing:
             console.print(
-                "  [yellow]note:[/] your shell env has "
-                f"[cyan]{info['key_env']}[/] exported. Any new key you paste "
-                "will be written to [cyan].env[/], but the shell env will "
-                "still take precedence until you unset it."
-            )
-            console.print(
-                f"    to unset:  [cyan]unset {info['key_env']}[/]  "
-                f"(bash/zsh)  or  [cyan]Remove-Item Env:{info['key_env']}[/]  (PowerShell)\n"
+                "  [dim]note:[/] your shell env has "
+                f"[cyan]{info['key_env']}[/] exported with a different value. "
+                "The key you paste will be written to [cyan].env[/] and "
+                "[bold].env wins[/] at runtime. "
+                "If you later want the shell value instead, delete the line "
+                "from .env.\n"
             )
         else:
             console.print("  [dim]ok — enter a new key.[/]\n")
