@@ -958,9 +958,13 @@ def chat(
                 continue
 
             try:
+                from thesis_agent.agent import _recursion_limit
                 result = agent.invoke(
                     {"messages": [{"role": "user", "content": msg}]},
-                    config={"configurable": {"thread_id": tid}},
+                    config={
+                        "configurable": {"thread_id": tid},
+                        "recursion_limit": _recursion_limit(),
+                    },
                 )
                 msgs = result.get("messages", [])
                 if msgs:

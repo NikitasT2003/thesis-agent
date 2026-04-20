@@ -74,7 +74,7 @@ def get_subagents(models: ModelConfig) -> list[dict]:
                 "raw sources. Use after `thesis ingest` when entries in "
                 "`research/raw/_index.json` have `status: pending`."
             ),
-            "model": make_model(models.curator),
+            "model": make_model(models.curator, role="curator"),
             "system_prompt": WIKI_CURATOR_PROMPT,
         },
         {
@@ -84,7 +84,7 @@ def get_subagents(models: ModelConfig) -> list[dict]:
                 "style, grounded in curated wiki pages. Provide the section "
                 "identifier (from thesis/outline.md) and a short brief."
             ),
-            "model": make_model(models.drafter),
+            "model": make_model(models.drafter, role="drafter"),
             "system_prompt": DRAFTER_PROMPT,
         },
         {
@@ -93,7 +93,7 @@ def get_subagents(models: ModelConfig) -> list[dict]:
                 "Delegate to the researcher (read-only) to answer questions about "
                 "what indexed sources say on a topic, with citations."
             ),
-            "model": make_model(models.researcher),
+            "model": make_model(models.researcher, role="researcher"),
             "system_prompt": RESEARCHER_PROMPT,
         },
     ]

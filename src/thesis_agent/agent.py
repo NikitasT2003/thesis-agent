@@ -28,7 +28,35 @@ reminders:
     writing thesis chapters, researcher for read-only questions.
   * Write scopes are enforced. Do not try to write outside them.
   * When asked for something you cannot ground in the indexed sources, say so.
+
+COST + EFFICIENCY RULES (non-negotiable):
+  * Plan briefly, then act. Do NOT enumerate every possible path before
+    reading a file. One `ls` or one `glob` is usually enough.
+  * Read each file AT MOST ONCE per task. AGENTS.md is already in your
+    system prompt — never `read_file("AGENTS.md")`.
+  * Do not re-read files you already read this turn.
+  * Prefer one decisive tool call over three speculative ones.
+  * When delegating to a subagent, give it ALL the context it needs in the
+    initial prompt — don't fan out into multiple task() calls for one job.
+  * If a tool returns an error, read the error and adjust; do not blindly
+    retry the same call.
+  * Stop as soon as the user's request is satisfied. Do not polish,
+    re-verify, or summarise unprompted.
 """
+
+# LangGraph safety ceiling — stops runaway loops before they bill a fortune.
+# Overridable via THESIS_RECURSION_LIMIT for power users (e.g. large theses
+# with many sources where 25 steps per curate pass isn't enough).
+import os as _os  # noqa: E402
+
+_DEFAULT_RECURSION_LIMIT = 25
+
+
+def _recursion_limit() -> int:
+    raw = _os.environ.get("THESIS_RECURSION_LIMIT")
+    if raw and raw.strip().isdigit():
+        return max(5, int(raw))
+    return _DEFAULT_RECURSION_LIMIT
 
 
 def _find_skills_dir() -> Path:
@@ -74,7 +102,10 @@ def build_agent(
         checkpointer, store = stack.enter_context(memory_context(p))
 
         kwargs: dict[str, Any] = {
-            "model": make_model(mconf.drafter),
+            # Main orchestrator runs on the drafter model (most capable)
+            # but with the curator's tighter output cap — the orchestrator
+            # mostly plans and delegates; it rarely needs a long reply.
+            "model": make_model(mconf.drafter, role="curator"),
             "tools": [],  # sandbox: no shell, no network, no code exec
             "system_prompt": system_prompt,
             "subagents": get_subagents(mconf),
@@ -103,7 +134,13 @@ def build_agent(
 def invoke(prompt: str, *, thread_id: str, p: Paths | None = None) -> str:
     """One-shot agent invocation. Returns the assistant's final message."""
     with build_agent(p=p) as agent:
-        cfg = {"configurable": {"thread_id": thread_id}}
+        cfg = {
+            "configurable": {"thread_id": thread_id},
+            # Hard ceiling on agent loop iterations — stops runaway spend
+            # before it starts. ~25 steps is enough for curating one source
+            # or drafting one section. Override with THESIS_RECURSION_LIMIT.
+            "recursion_limit": _recursion_limit(),
+        }
         result = agent.invoke(
             {"messages": [{"role": "user", "content": prompt}]},
             config=cfg,

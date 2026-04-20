@@ -278,12 +278,44 @@ def models() -> ModelConfig:
     )
 
 
-def make_model(model_id: str, *, temperature: float = 0.0):
+def _role_max_tokens(role: str | None) -> int:
+    """Per-role output caps. Overridable via env vars.
+
+    Rationale: without a cap Sonnet will emit up to 8K tokens per reply
+    and rack up cost fast on multi-turn agent loops. Caps picked from the
+    shape of each role's output:
+      - drafter   ~ full thesis section  (4K is generous)
+      - curator   ~ one wiki page        (2K fits the template + buffer)
+      - researcher ~ a citation-backed summary (1K)
+      - default   ~ 2K
+    """
+    defaults = {"drafter": 4000, "curator": 2000, "researcher": 1000}
+    env_key = f"THESIS_MAX_TOKENS_{(role or 'DEFAULT').upper()}"
+    override = os.environ.get(env_key)
+    if override and override.strip().isdigit():
+        return int(override)
+    return defaults.get(role or "", 2000)
+
+
+def make_model(
+    model_id: str,
+    *,
+    temperature: float = 0.0,
+    role: str | None = None,
+    max_tokens: int | None = None,
+):
     """Build a LangChain chat model for the current provider.
 
     - anthropic: uses `init_chat_model("anthropic:<id>")` — deepagents idiom.
     - openrouter: returns a `ChatOpenAI` pointed at OpenRouter with headers.
+
+    `role` (drafter/curator/researcher) drives the default `max_tokens`
+    output cap. Explicit `max_tokens` wins over role-derived defaults.
+    Env overrides: `THESIS_MAX_TOKENS_DRAFTER` / `..._CURATOR` / `..._RESEARCHER`.
     """
+    if max_tokens is None:
+        max_tokens = _role_max_tokens(role)
+
     prov = provider()
     if prov == "openrouter":
         from langchain_openai import ChatOpenAI
@@ -308,6 +340,7 @@ def make_model(model_id: str, *, temperature: float = 0.0):
             base_url=base_url,
             model=model_id,
             temperature=temperature,
+            max_tokens=max_tokens,
             default_headers=headers or None,
             extra_body=extra_body or None,
         )
@@ -315,7 +348,7 @@ def make_model(model_id: str, *, temperature: float = 0.0):
     # Default: anthropic / init_chat_model string form.
     from langchain.chat_models import init_chat_model
 
-    return init_chat_model(model_id, temperature=temperature)
+    return init_chat_model(model_id, temperature=temperature, max_tokens=max_tokens)
 
 
 def read_thread_id() -> str:
