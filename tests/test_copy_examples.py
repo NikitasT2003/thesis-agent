@@ -97,15 +97,27 @@ class TestWizardExampleReport:
         # Should name at least one new file
         assert "new" in result.stdout
 
-    def test_second_run_says_already_present(self, ws: Path):
+    def test_second_run_skips_examples_by_default(self, ws: Path):
+        """On re-run, we must NOT re-copy examples (user may have deleted
+        them deliberately). The wizard should tell them what happened and
+        how to force a copy."""
         self._run_setup()
         result = self._run_setup()
         assert result.exit_code == 0
-        # Must NOT mislead with "copied 0"
+        # Must not mislead with "copied 0"
         assert "copied 0" not in result.stdout
-        # Must explain the real state
+        # Must announce the skip + the escape hatch
+        assert "re-run detected" in result.stdout or "skipping examples" in result.stdout
+        assert "--with-examples" in result.stdout
+
+    def test_second_run_with_examples_flag_copies_and_reports_already_present(self, ws: Path):
+        """If user explicitly passes --with-examples on a re-run, we attempt
+        the copy and report honestly (already-present since they're already there)."""
+        self._run_setup()
+        result = self._run_setup(["--with-examples"])
+        assert result.exit_code == 0
+        assert "copied 0" not in result.stdout
         assert "already in your workspace" in result.stdout
-        # Must point to the escape hatch
         assert "--overwrite-examples" in result.stdout
 
     def test_overwrite_flag_replaces_and_reports(self, ws: Path):

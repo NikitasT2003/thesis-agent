@@ -223,6 +223,10 @@ def setup(
         False, "--overwrite-examples",
         help="Replace example files in the workspace even if they already exist.",
     ),
+    with_examples: bool = typer.Option(
+        False, "--with-examples",
+        help="Copy examples even on a re-run of setup (by default examples are only offered on first run).",
+    ),
     quickstart: bool = typer.Option(
         False, "--quickstart", help="Accept sensible defaults for every prompt.",
     ),
@@ -244,6 +248,10 @@ def setup(
     )
 
     p = paths()
+    # `.env` existing is our signal that setup has run here before — we don't
+    # re-offer examples on re-runs so users who deleted them don't have them
+    # come back uninvited. `--with-examples` forces the copy on a re-run.
+    first_run = not p.env_file.exists()
 
     try:
         # Step 1: Provider ---------------------------------------------------
@@ -348,14 +356,33 @@ def setup(
         _step(5, "Copy examples (optional)")
         if skip_examples:
             copy_ex = False
+        elif with_examples or overwrite_examples:
+            # Explicit opt-in — copy regardless of first-run status.
+            # `--overwrite-examples` implies opt-in; otherwise it would be a
+            # no-op on re-runs (which would be surprising).
+            copy_ex = True
         elif non_interactive or quickstart:
-            copy_ex = not skip_examples
+            # Headless: only auto-copy on first run. Once the user has run
+            # setup before (i.e. .env already exists), we assume they either
+            # already accepted examples the first time OR chose to delete them.
+            copy_ex = first_run
+            if not copy_ex:
+                console.print(
+                    "  [dim]re-run detected — skipping examples. "
+                    "Pass [cyan]--with-examples[/] to copy them anyway.[/]"
+                )
         else:
+            prompt = (
+                "Copy example sources + sample style essay? (recommended for first run)"
+                if first_run
+                else "Copy example sources again? (you've run setup before; "
+                     "default is No so deleted examples don't come back)"
+            )
             try:
                 copy_ex = _ask(
                     questionary.confirm,
-                    "Copy example sources + sample style essay? (recommended for first run)",
-                    default=True,
+                    prompt,
+                    default=first_run,
                 )
             except _Cancelled:
                 copy_ex = False
