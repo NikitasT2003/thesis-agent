@@ -96,13 +96,23 @@ def _ensure_workspace(force: bool = False) -> None:
         )
 
 
-def _copy_examples() -> int:
-    """Copy `examples/` into the workspace. Returns count of files copied."""
+def _copy_examples(*, overwrite: bool = False) -> dict[str, int]:
+    """Copy `examples/` into the workspace.
+
+    Returns a dict with three counters so the caller can report honestly:
+      - `copied`: files written to an empty target
+      - `overwritten`: existing files replaced (only when `overwrite=True`)
+      - `already_present`: skipped because the target already existed
+                           (only when `overwrite=False`)
+    A `source_missing` bool indicates the bundled `examples/` tree is absent
+    — happens in odd installs (e.g. wheel without examples bundled).
+    """
+    result = {"copied": 0, "overwritten": 0, "already_present": 0, "source_missing": 0}
     src_root = Path(__file__).resolve().parent.parent.parent / "examples"
     if not src_root.exists():
-        return 0
+        result["source_missing"] = 1
+        return result
     p = paths()
-    n = 0
     mapping = {
         src_root / "research" / "raw": p.raw,
         src_root / "style" / "samples": p.style_samples,
@@ -113,12 +123,19 @@ def _copy_examples() -> int:
             continue
         dst.mkdir(parents=True, exist_ok=True)
         for f in src.iterdir():
-            if f.is_file() and f.name != ".gitkeep":
-                target = dst / f.name
-                if not target.exists():
+            if not (f.is_file() and f.name != ".gitkeep"):
+                continue
+            target = dst / f.name
+            if target.exists():
+                if overwrite:
                     target.write_bytes(f.read_bytes())
-                    n += 1
-    return n
+                    result["overwritten"] += 1
+                else:
+                    result["already_present"] += 1
+            else:
+                target.write_bytes(f.read_bytes())
+                result["copied"] += 1
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +218,10 @@ def setup(
     ),
     skip_examples: bool = typer.Option(
         False, "--skip-examples", help="Don't copy example sources.",
+    ),
+    overwrite_examples: bool = typer.Option(
+        False, "--overwrite-examples",
+        help="Replace example files in the workspace even if they already exist.",
     ),
     quickstart: bool = typer.Option(
         False, "--quickstart", help="Accept sensible defaults for every prompt.",
@@ -339,8 +360,30 @@ def setup(
             except _Cancelled:
                 copy_ex = False
         if copy_ex:
-            n = _copy_examples()
-            console.print(f"  [green]✓[/] copied {n} example file(s).")
+            res = _copy_examples(overwrite=overwrite_examples)
+            if res["source_missing"]:
+                console.print(
+                    "  [yellow]bundled examples/ tree not found in this install — "
+                    "skipped.[/]"
+                )
+            elif res["copied"] or res["overwritten"]:
+                parts = []
+                if res["copied"]:
+                    parts.append(f"copied {res['copied']} new")
+                if res["overwritten"]:
+                    parts.append(f"overwrote {res['overwritten']}")
+                if res["already_present"]:
+                    parts.append(f"left {res['already_present']} already-present in place")
+                console.print(f"  [green]✓[/] examples: {', '.join(parts)}.")
+            elif res["already_present"]:
+                # The honest report: nothing to do, not a failure.
+                console.print(
+                    f"  [dim]examples already in your workspace ({res['already_present']} "
+                    f"file(s)) — nothing to copy. Use [cyan]--overwrite-examples[/] "
+                    f"if you want to replace them.[/]"
+                )
+            else:
+                console.print("  [dim]no example files to copy.[/]")
         else:
             console.print("  [dim]skipped examples.[/]")
 

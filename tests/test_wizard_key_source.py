@@ -82,7 +82,9 @@ def ws(tmp_path: Path, monkeypatch):
     ):
         monkeypatch.delenv(v, raising=False)
     monkeypatch.setattr(cli, "_validate_key", lambda *a, **kw: (True, "ok"))
-    monkeypatch.setattr(cli, "_copy_examples", lambda: 0)
+    monkeypatch.setattr(cli, "_copy_examples", lambda **kw: {
+        "copied": 0, "overwritten": 0, "already_present": 0, "source_missing": 0,
+    })
     return tmp_path
 
 

@@ -100,8 +100,9 @@ class TestCopyExamples:
         p = paths()
         for d in (p.raw, p.style_samples, p.thesis_dir):
             d.mkdir(parents=True, exist_ok=True)
-        n = cli._copy_examples()
-        assert n >= 1  # at least the example source
+        res = cli._copy_examples()
+        assert isinstance(res, dict)
+        assert res["copied"] >= 1  # at least the example source
 
 
 # ---------------------------------------------------------------------------

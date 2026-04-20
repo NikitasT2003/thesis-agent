@@ -107,7 +107,9 @@ def _patch_questionary(monkeypatch, script: list[Any]) -> FakeQuestionary:
 def _no_real_calls(monkeypatch):
     """Neutralise validation + example copying so tests run offline and fast."""
     monkeypatch.setattr(cli, "_validate_key", lambda *a, **kw: (True, "ok"))
-    monkeypatch.setattr(cli, "_copy_examples", lambda: 0)
+    monkeypatch.setattr(cli, "_copy_examples", lambda **kw: {
+        "copied": 0, "overwritten": 0, "already_present": 0, "source_missing": 0,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +282,9 @@ def test_ctrl_c_writes_nothing(workspace: Path, monkeypatch):
 def test_validation_failure_then_save_anyway(workspace: Path, monkeypatch):
     """Validation fails — user picks 'save anyway'."""
     monkeypatch.setattr(cli, "_validate_key", lambda *a, **kw: (False, "401 invalid key"))
-    monkeypatch.setattr(cli, "_copy_examples", lambda: 0)
+    monkeypatch.setattr(cli, "_copy_examples", lambda **kw: {
+        "copied": 0, "overwritten": 0, "already_present": 0, "source_missing": 0,
+    })
     _patch_questionary(monkeypatch, [
         "anthropic",
         "sk-ant-bad",     # key
