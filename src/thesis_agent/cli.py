@@ -52,17 +52,51 @@ console = Console()
 def _ensure_workspace(force: bool = False) -> None:
     """Create missing workspace folders without clobbering existing files."""
     p = paths()
+    # LLM Wiki pattern: wiki is organised into categories. Pre-create the
+    # subdirectories so the curator doesn't have to mkdir on every ingest.
+    wiki_sources = p.wiki / "sources"
+    wiki_entities = p.wiki / "entities"
+    wiki_concepts = p.wiki / "concepts"
+    wiki_queries = p.wiki / "queries"
     dirs = [
-        p.raw, p.wiki, p.style_samples, p.chapters, p.data_dir,
+        p.raw, p.wiki, wiki_sources, wiki_entities, wiki_concepts, wiki_queries,
+        p.style_samples, p.chapters, p.data_dir,
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
 
-    gitkeep_dirs = [p.raw, p.wiki, p.style_samples, p.chapters]
+    gitkeep_dirs = [
+        p.raw, p.wiki, wiki_sources, wiki_entities, wiki_concepts, wiki_queries,
+        p.style_samples, p.chapters,
+    ]
     for d in gitkeep_dirs:
         gk = d / ".gitkeep"
         if not gk.exists():
             gk.touch()
+
+    # Seed the content-catalog and chronological log so the agent always
+    # knows where to append. Both are user-visible files; don't clobber if
+    # they already exist.
+    idx = p.wiki / "index.md"
+    if not idx.exists():
+        idx.write_text(
+            "# Wiki Index\n\n"
+            "_The content catalog for the LLM wiki. The agent keeps this "
+            "up to date on every ingest and filed-back query._\n\n"
+            "## Concepts\n\n"
+            "## Entities\n\n"
+            "## Sources\n\n"
+            "## Queries\n",
+            encoding="utf-8",
+        )
+    log = p.wiki / "log.md"
+    if not log.exists():
+        log.write_text(
+            "# Wiki Log\n\n"
+            "_Chronological, append-only record of ingests, queries, and "
+            "lint passes. Prefix format: `## [YYYY-MM-DD] <op> | <title>`._\n",
+            encoding="utf-8",
+        )
 
     urls = p.urls_file
     if not urls.exists():
@@ -861,10 +895,19 @@ def curate(
     tid = thread or read_thread_id()
     write_thread_id(tid)
     _run(
-        "Curate all pending sources per AGENTS.md. For each entry in "
-        "`research/raw/_index.json` with status 'pending', delegate to the "
-        "wiki-curator subagent, build the wiki page, update `index.md`, flag "
-        "conflicts, then flip status to 'curated'.",
+        "Curate all pending sources per AGENTS.md using the LLM Wiki "
+        "pattern. For each entry in `research/raw/_index.json` with "
+        "status 'pending', delegate to the wiki-curator subagent. A "
+        "single ingest must touch multiple pages: write the source "
+        "summary under `research/wiki/sources/`, create or extend "
+        "relevant entity pages under `research/wiki/entities/`, create "
+        "or extend relevant concept pages under `research/wiki/concepts/`, "
+        "update `research/wiki/index.md`, append a grep-friendly entry "
+        "to `research/wiki/log.md` (`## [YYYY-MM-DD] ingest | <title>`), "
+        "flag conflicts (flag only — do not merge), maintain reciprocal "
+        "cross-references, then flip status to 'curated' and list the "
+        "touched pages in `curated_pages`. If a source only touched 1-2 "
+        "pages, you missed the point of the wiki pattern — redo it.",
         tid,
     )
 
@@ -901,16 +944,49 @@ def write(
 
 @app.command()
 def lint(
-    file: Path | None = typer.Argument(None, help="Chapter file to lint. Defaults to all chapters."),
+    file: Path | None = typer.Argument(
+        None,
+        help="Chapter file to lint. If omitted, runs the wiki-linter over research/wiki/.",
+    ),
+    citations: bool = typer.Option(
+        False, "--citations",
+        help="Force citation-only linting (ungrounded claims, dead [src:...] markers) even with no file argument.",
+    ),
     thread: str = typer.Option(None, "--thread"),
 ) -> None:
-    """Run the citation-linter over thesis chapters."""
+    """Lint the wiki (default) or a thesis chapter.
+
+    Without arguments → wiki health check (orphans, stale claims, missing
+    cross-refs, data gaps, follow-up questions) via the `wiki-linter` skill.
+
+    With a chapter file or `--citations` → citation-only scan via the
+    `citation-linter` skill (dead markers, ungrounded paragraphs).
+    """
     tid = thread or read_thread_id()
     write_thread_id(tid)
-    target = str(file) if file else "`thesis/chapters/*.md`"
+
+    if file is not None:
+        _run(
+            f"Invoke the citation-linter skill on {file}. Report dead "
+            f"citations and ungrounded paragraphs. Do not auto-edit.",
+            tid,
+        )
+        return
+
+    if citations:
+        _run(
+            "Invoke the citation-linter skill on `thesis/chapters/*.md`. "
+            "Report dead citations and ungrounded paragraphs. Do not auto-edit.",
+            tid,
+        )
+        return
+
     _run(
-        f"Invoke the citation-linter skill on {target}. Report dead citations "
-        f"and ungrounded paragraphs. Do not auto-edit.",
+        "Invoke the wiki-linter skill. Scan `research/wiki/**` for "
+        "contradictions, stale claims, orphan pages, missing cross-refs, "
+        "missing entity/concept pages, and data gaps. Suggest 2-5 "
+        "follow-up questions. Append a lint entry to `research/wiki/log.md`. "
+        "Do not auto-fix.",
         tid,
     )
 

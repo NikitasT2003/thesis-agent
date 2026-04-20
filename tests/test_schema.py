@@ -24,6 +24,7 @@ FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 EXPECTED_SKILLS = {
     "ingest-sources",
     "wiki-curator",
+    "wiki-linter",
     "thesis-writer",
     "style-learner",
     "citation-linter",
@@ -136,6 +137,32 @@ class TestAgentsMd:
     def test_page_template_present(self, text: str):
         for section in ("## Summary", "## Key claims", "## Conflicts", "## See also"):
             assert section in text
+
+    def test_declares_llm_wiki_categories(self, text: str):
+        """Regression: AGENTS.md must name all four page categories so the
+        curator knows where to write. Drift here means the agent starts
+        inventing directory layouts."""
+        for cat in (
+            "research/wiki/sources",
+            "research/wiki/entities",
+            "research/wiki/concepts",
+            "research/wiki/queries",
+        ):
+            assert cat in text, f"AGENTS.md missing wiki category: {cat}"
+
+    def test_declares_index_and_log(self, text: str):
+        assert "index.md" in text
+        assert "log.md" in text
+        # Log prefix must appear as guidance so the grep-parseability
+        # convention doesn't drift.
+        assert "## [YYYY-MM-DD]" in text
+
+    def test_declares_one_ingest_many_pages_rule(self, text: str):
+        """The key Karpathy-LLM-Wiki invariant: one source touches many
+        pages, not just a source summary."""
+        lowered = text.lower()
+        assert "one ingest touches many pages" in lowered or \
+               "a single source" in lowered and "pages" in lowered
 
 
 # ---------------------------------------------------------------------------

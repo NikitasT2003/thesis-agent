@@ -1,11 +1,14 @@
 ---
 name: thesis-writer
 description: >
-  Use this skill when the user asks you to draft, write, or expand a thesis
-  section, chapter, paragraph, or the whole thesis. Enforces the grounding
-  rule (every factual claim cites an indexed source), loads the user's writing
-  style from `style/STYLE.md`, navigates the wiki for supporting material, and
-  writes to `thesis/chapters/<NN>.md` matching `thesis/outline.md` numbering.
+  Use this skill to draft, write, or expand a thesis section, chapter,
+  paragraph, or the whole thesis. Enforces the grounding rule (every
+  factual claim cites an indexed source), loads the user's writing style
+  from `style/STYLE.md`, navigates the LLM-Wiki-pattern knowledge base
+  (index.md → concept pages → entity pages → source pages → raw), and
+  writes to `thesis/chapters/<NN>.md` matching `thesis/outline.md`
+  numbering. When the drafting surfaced substantive synthesis worth
+  keeping, also files a query/synthesis page back into the wiki.
   Triggers "draft", "write section", "expand outline", "write chapter",
   "flesh out 2.1", "continue writing".
 ---
@@ -14,29 +17,66 @@ description: >
 
 ## Procedure (non-negotiable order)
 
-1. **Style check.** Read `style/STYLE.md`. If it does not exist, STOP and tell the user: "Run `thesis style` first to compile your writing-style guide from `style/samples/`." Do not draft without a style guide.
+1. **Style check.** Read `style/STYLE.md`. If missing, STOP and tell the
+   user: "Run `thesis style` first to compile your writing-style guide from
+   `style/samples/`." Do not draft without a style guide.
 
-2. **Outline check.** Read `thesis/outline.md`. Find the section the user asked for. If missing, ask the user to add it to the outline first.
+2. **Outline check.** Read `thesis/outline.md`. Locate the requested section.
+   If absent, ask the user to add it to the outline before drafting.
 
-3. **Wiki navigation.** Read `research/wiki/index.md`. Identify pages relevant to the section (match on tags, entity names, section keywords). Read each relevant wiki page.
+3. **Wiki navigation** (do this in order; do NOT jump straight to raw files):
+   a. Read `research/wiki/index.md` and identify the concept pages relevant
+      to the section.
+   b. Read those concept pages. Follow their `See also` links to
+      entity pages.
+   c. Read the entity pages. Follow their `See also` links to source-summary
+      pages where you need the source's exact wording.
+   d. Drill into `research/raw/<file>.md` ONLY when a source page lacks a
+      specific detail. Prefer wiki-first.
 
-4. **Drill-down (only if needed).** If a wiki page's summary/key-claims do not cover a point you need, read the corresponding `research/raw/<file>.md` for verbatim context. Prefer wiki-first.
-
-5. **Delegate to drafter.** Hand off to the `drafter` subagent with:
+4. **Delegate to the `drafter` subagent** with:
    - Section identifier + outline excerpt.
-   - The list of wiki pages that will ground the draft.
-   - A reminder to follow `style/STYLE.md`.
+   - The list of wiki pages (concept → entity → source) you consulted.
+   - A reminder to follow `style/STYLE.md` exactly.
 
-6. **Drafter writes** `thesis/chapters/<NN>.md` where `NN` matches the outline's numbering (e.g. section 2.1 → chapter 02). If the chapter file already exists, extend it — do not overwrite silently.
+5. **Drafter writes** to `thesis/chapters/<NN>.md` (where `NN` matches the
+   outline numbering). If the chapter file already exists, extend it —
+   use `edit_file`, not `write_file` (which refuses to overwrite).
 
-7. **Self-lint before returning.** Every paragraph with a factual statement has at least one `[src:<filename>]`. Grab-bag transitions without factual content are fine.
+6. **Self-lint before returning.** Every paragraph making a factual
+   statement has at least one `[src:<raw_filename>]`. Transitions and
+   author commentary without facts are fine.
+
+7. **File-back check.** If the drafting required non-trivial synthesis —
+   a cross-source comparison, a new connection, a causal argument the
+   sources didn't state outright — file that reasoning back into the wiki
+   as a query/synthesis page:
+   `research/wiki/queries/<YYYY-MM-DD>-<slug>.md`. Why: the reasoning
+   compounds if it's in the wiki, but disappears if it's only in a chapter
+   (where future questions can't reach it easily). Update `index.md` under
+   Queries and append to `log.md`:
+   ```
+   ## [YYYY-MM-DD] query | wrote section <N.M>
+   - Filed: [[queries/YYYY-MM-DD-<slug>]]
+   - Pages read: [[…]], [[…]]
+   ```
+   For routine drafting that just restates what sources already say, skip
+   this step.
 
 ## Hard rules
-- **Never write a factual claim without `[src:<raw_filename>]`.** If wiki + raw don't support it, output "no grounding in indexed sources — add material or remove claim" and stop.
-- **Never use pretraining knowledge** for facts, statistics, quotes, author attributions, or dates. The indexed sources are the only truth.
-- **Never fabricate** a source filename. Every `[src:X]` must correspond to an actual file under `research/raw/`.
-- **Match the style guide**: sentence length, hedging, jargon density, POV, transitions. The drafter should re-read `STYLE.md` before every handoff.
-- **Respect write scope**: drafter writes only under `thesis/**`.
+- **Never a factual claim without `[src:<raw_filename>]`.** Refuse with
+  "no grounding in indexed sources — add material or remove claim."
+- **No pretraining facts, no web.** The wiki is the truth.
+- **Never fabricate** a source filename. Every `[src:X]` corresponds to
+  an actual file in `research/raw/`.
+- **Match `STYLE.md`** — sentence length, hedging, POV, citation placement,
+  transitions. Re-read it at the start of each drafting turn.
+- **Respect scope**: drafter writes only under `thesis/**`; file-back
+  queries go under `research/wiki/queries/**`.
+- **Use `edit_file` to extend** existing chapters. `write_file` refuses
+  to overwrite.
 
 ## Output
-After drafting, report to the user: file written, approximate word count, and a 2-line summary of what you drafted. Do not paste the full chapter back into chat unless asked.
+Report back: the chapter file written, approximate word count, number of
+citations, and (if filed) the query page path. Do not paste the full chapter
+into chat unless asked.

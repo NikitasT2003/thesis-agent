@@ -335,20 +335,37 @@ class TestAgentCommands:
         assert "3.2" in seen[0][0]
         assert "thesis/chapters" in seen[0][0]
 
-    def test_lint_defaults_to_all_chapters(self, ws: Path, monkeypatch):
+    def test_lint_defaults_to_wiki_linter(self, ws: Path, monkeypatch):
+        """No args → wiki health check under research/wiki/."""
         _init(ws)
         seen = _record_invoke(monkeypatch)
         runner.invoke(cli.app, ["lint"])
         prompt = seen[0][0]
-        assert "thesis/chapters" in prompt
+        assert "wiki-linter" in prompt
+        assert "research/wiki" in prompt
+        # And the log-append convention is reinforced
+        assert "log.md" in prompt
 
-    def test_lint_specific_file_passed(self, ws: Path, monkeypatch):
+    def test_lint_specific_file_uses_citation_linter(self, ws: Path, monkeypatch):
+        """Passing a chapter file → narrow citation lint, not wiki lint."""
         _init(ws)
         target = ws / "thesis" / "chapters" / "03.md"
         target.write_text("# 3\n", encoding="utf-8")
         seen = _record_invoke(monkeypatch)
         runner.invoke(cli.app, ["lint", str(target)])
-        assert "03.md" in seen[0][0] or str(target) in seen[0][0]
+        prompt = seen[0][0]
+        assert "citation-linter" in prompt
+        assert "03.md" in prompt or str(target) in prompt
+        assert "wiki-linter" not in prompt
+
+    def test_lint_citations_flag_forces_citation_linter(self, ws: Path, monkeypatch):
+        """--citations without a file → citation lint over all chapters."""
+        _init(ws)
+        seen = _record_invoke(monkeypatch)
+        runner.invoke(cli.app, ["lint", "--citations"])
+        prompt = seen[0][0]
+        assert "citation-linter" in prompt
+        assert "thesis/chapters" in prompt
 
     @pytest.mark.parametrize("cmd,extra", [
         ("curate", []),

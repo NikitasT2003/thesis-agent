@@ -312,6 +312,192 @@ class TestDeterministicOutput:
         assert res["messages"][-1].content == "hello back"
 
 
+class TestLLMWikiPatternIngest:
+    """The Karpathy LLM Wiki pattern requires a single ingest to touch
+    many pages — source summary + entity pages + concept pages + index +
+    log. These tests lock in that structure at the file-system layer."""
+
+    def test_multi_page_ingest_produces_all_categories(self, workspace: Path):
+        # Seed workspace with the expected wiki subdirs + index + log +
+        # a raw source + a pending manifest.
+        for sub in ("sources", "entities", "concepts", "queries"):
+            (workspace / "research" / "wiki" / sub).mkdir(parents=True, exist_ok=True)
+        (workspace / "research" / "wiki" / "index.md").write_text(
+            "# Wiki Index\n\n## Concepts\n\n## Entities\n\n## Sources\n\n## Queries\n",
+            encoding="utf-8",
+        )
+        (workspace / "research" / "wiki" / "log.md").write_text(
+            "# Wiki Log\n\n", encoding="utf-8",
+        )
+        raw_file = workspace / "research" / "raw" / "transformer.md"
+        raw_file.write_text(
+            "# Attention Is All You Need\nVaswani et al. introduce the Transformer.\n",
+            encoding="utf-8",
+        )
+        manifest = {
+            "version": 1,
+            "entries": {
+                "transformer.md": {
+                    "filename": "transformer.md", "orig": "transformer.md",
+                    "orig_ext": ".md", "sha256": "aaa", "bytes": 60, "words": 10,
+                    "status": "pending", "ingested_at": "2026-04-20",
+                    "curated_pages": [],
+                },
+            },
+        }
+        (workspace / "research" / "raw" / "_index.json").write_text(
+            json.dumps(manifest, indent=2), encoding="utf-8",
+        )
+
+        # Script the canonical multi-page ingest: read raw, write source
+        # summary, create two entity pages, create one concept page,
+        # update index.md, append log.md, flip manifest status.
+        source_page = (
+            "---\ntitle: Attention Is All You Need\n"
+            "type: source\ntags: [transformer, attention]\n"
+            "source: transformer.md\ncreated: 2026-04-20\nupdated: 2026-04-20\n---\n\n"
+            "# Attention Is All You Need\n\n"
+            "## Summary\nIntroduces the Transformer. [src:transformer.md]\n\n"
+            "## Key claims\n- Transformer uses self-attention. [src:transformer.md]\n"
+            "- No recurrence required. [src:transformer.md]\n\n"
+            "## See also\n- [[entities/transformer]] — the architecture\n"
+            "- [[entities/self-attention]] — the mechanism\n\n"
+            "## Conflicts\n"
+        )
+        entity_transformer = (
+            "---\ntitle: Transformer\ntype: entity\ntags: [architecture]\n"
+            "sources: [transformer.md]\ncreated: 2026-04-20\nupdated: 2026-04-20\n---\n\n"
+            "# Transformer\n\n## Summary\nAttention-based architecture. "
+            "[src:transformer.md]\n\n## Key claims\n"
+            "- Uses self-attention layers. [src:transformer.md]\n\n"
+            "## See also\n- [[sources/transformer.md]]\n- [[entities/self-attention]]\n"
+            "- [[concepts/attention-mechanisms]]\n\n## Conflicts\n"
+        )
+        entity_selfattn = (
+            "---\ntitle: Self-Attention\ntype: entity\ntags: [mechanism]\n"
+            "sources: [transformer.md]\ncreated: 2026-04-20\nupdated: 2026-04-20\n---\n\n"
+            "# Self-Attention\n\n## Summary\nAllows every token to attend to every "
+            "other token. [src:transformer.md]\n\n## Key claims\n"
+            "- Scales as O(n^2) in sequence length. [src:transformer.md]\n\n"
+            "## See also\n- [[sources/transformer.md]]\n- [[entities/transformer]]\n\n"
+            "## Conflicts\n"
+        )
+        concept_attention = (
+            "---\ntitle: Attention Mechanisms\ntype: concept\n"
+            "tags: [nn, sequence-modelling]\nsources: [transformer.md]\n"
+            "created: 2026-04-20\nupdated: 2026-04-20\n---\n\n"
+            "# Attention Mechanisms\n\n## Summary\nLet a model focus on relevant "
+            "parts of the input. [src:transformer.md]\n\n## Key claims\n"
+            "- Replaces recurrence in sequence modelling. [src:transformer.md]\n\n"
+            "## See also\n- [[entities/transformer]]\n- [[entities/self-attention]]\n\n"
+            "## Conflicts\n"
+        )
+
+        agent = _build_agent_with_scripted_llm(
+            workspace,
+            responses=[
+                ai("", tool_call("read_file", {"file_path": "/research/raw/transformer.md"}, "r1")),
+                ai("", tool_call("write_file", {
+                    "file_path": "/research/wiki/sources/transformer.md",
+                    "content": source_page,
+                }, "w_src")),
+                ai("", tool_call("write_file", {
+                    "file_path": "/research/wiki/entities/transformer.md",
+                    "content": entity_transformer,
+                }, "w_e1")),
+                ai("", tool_call("write_file", {
+                    "file_path": "/research/wiki/entities/self-attention.md",
+                    "content": entity_selfattn,
+                }, "w_e2")),
+                ai("", tool_call("write_file", {
+                    "file_path": "/research/wiki/concepts/attention-mechanisms.md",
+                    "content": concept_attention,
+                }, "w_c1")),
+                # Update index.md via edit_file (add a bullet under each
+                # section). One simple edit per section to keep the script
+                # compact.
+                ai("", tool_call("edit_file", {
+                    "file_path": "/research/wiki/index.md",
+                    "old_string": "## Sources\n",
+                    "new_string": "## Sources\n- [[sources/transformer.md]] — intro to the Transformer\n",
+                }, "e_idx")),
+                # Append a log entry
+                ai("", tool_call("edit_file", {
+                    "file_path": "/research/wiki/log.md",
+                    "old_string": "# Wiki Log\n\n",
+                    "new_string": (
+                        "# Wiki Log\n\n"
+                        "## [2026-04-20] ingest | Attention Is All You Need\n"
+                        "- New pages: [[sources/transformer.md]], "
+                        "[[entities/transformer]], [[entities/self-attention]], "
+                        "[[concepts/attention-mechanisms]]\n"
+                        "- Conflicts flagged: 0\n\n"
+                    ),
+                }, "e_log")),
+                # Flip manifest status
+                ai("", tool_call("edit_file", {
+                    "file_path": "/research/raw/_index.json",
+                    "old_string": '"status": "pending"',
+                    "new_string": '"status": "curated"',
+                }, "e_mf")),
+                final("curated 1 source, touched 7 pages"),
+            ],
+        )
+        _invoke(agent, "curate pending")
+
+        # Verify every category produced something
+        assert (workspace / "research" / "wiki" / "sources" / "transformer.md").exists()
+        assert (workspace / "research" / "wiki" / "entities" / "transformer.md").exists()
+        assert (workspace / "research" / "wiki" / "entities" / "self-attention.md").exists()
+        assert (workspace / "research" / "wiki" / "concepts" / "attention-mechanisms.md").exists()
+
+        # index.md updated
+        idx = (workspace / "research" / "wiki" / "index.md").read_text(encoding="utf-8")
+        assert "[[sources/transformer.md]]" in idx
+
+        # log.md has the grep-friendly prefix
+        log = (workspace / "research" / "wiki" / "log.md").read_text(encoding="utf-8")
+        assert "## [2026-04-20] ingest | Attention Is All You Need" in log
+
+        # Manifest flipped
+        updated = json.loads((workspace / "research" / "raw" / "_index.json").read_text(encoding="utf-8"))
+        assert updated["entries"]["transformer.md"]["status"] == "curated"
+
+        # All four page categories have at least one page
+        for sub, required_count in (("sources", 1), ("entities", 2), ("concepts", 1)):
+            pages = list((workspace / "research" / "wiki" / sub).glob("*.md"))
+            assert len(pages) >= required_count, (
+                f"expected >={required_count} page(s) under {sub}/, got {len(pages)}"
+            )
+
+
+class TestWorkspaceSeedsWikiScaffold:
+    """The `init` / setup workflow must pre-create the wiki categories +
+    index.md + log.md so the agent knows where to write on first curate."""
+
+    def test_init_creates_full_wiki_layout(self, workspace: Path, monkeypatch):
+        # Fresh workspace (clobber what our fixture put in place)
+        import shutil
+
+        from thesis_agent import cli
+        shutil.rmtree(workspace / "research", ignore_errors=True)
+        shutil.rmtree(workspace / "thesis", ignore_errors=True)
+        monkeypatch.chdir(workspace)
+
+        cli._ensure_workspace()
+
+        # Every category dir exists
+        for sub in ("sources", "entities", "concepts", "queries"):
+            assert (workspace / "research" / "wiki" / sub).is_dir(), sub
+        # index.md + log.md seeded
+        idx = (workspace / "research" / "wiki" / "index.md").read_text(encoding="utf-8")
+        assert "Concepts" in idx and "Entities" in idx and "Sources" in idx and "Queries" in idx
+        log = (workspace / "research" / "wiki" / "log.md").read_text(encoding="utf-8")
+        assert "Wiki Log" in log
+        # The log explains the grep-friendly prefix convention
+        assert "YYYY-MM-DD" in log
+
+
 class TestSandboxViaFilesystemBackend:
     """The FilesystemBackend enforces a root boundary. These tests confirm
     the agent cannot escape it even when the scripted LLM explicitly tries."""
