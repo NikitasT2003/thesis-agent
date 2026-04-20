@@ -395,6 +395,24 @@ def _resolve_provider(
     )
 
 
+def _mask_key(key: str) -> str:
+    """Show the shape of a key without leaking it.
+
+    Preserves the recognisable prefix (e.g. `sk-or-`, `sk-ant-`) and the last
+    4 characters, hiding the middle. `sk-or-abc…wxyz`. For unusually short
+    keys we just print the length.
+    """
+    k = (key or "").strip()
+    if not k:
+        return "<empty>"
+    if len(k) < 12:
+        return f"<{len(k)} chars>"
+    # Prefix runs up to the second dash if present, otherwise first 6 chars.
+    prefix_end = k.find("-", k.find("-") + 1)
+    prefix = k[: prefix_end + 1] if 0 < prefix_end < 15 else k[:6]
+    return f"{prefix}…{k[-4:]}"
+
+
 def _resolve_api_key(
     *,
     info: dict,
@@ -406,6 +424,8 @@ def _resolve_api_key(
     """Return a key, or None if the user chose to skip.
 
     Precedence: --api-key flag > shell env > .env > interactive prompt (with retry).
+    Always tells the user *where* an existing key came from, and shows a
+    masked preview so they can recognise it before reusing.
     """
     import questionary
 
@@ -414,17 +434,42 @@ def _resolve_api_key(
 
     shell_key = (os.environ.get(info["key_env"]) or "").strip() or None
     env_key = _read_env_var(info["key_env"])
-    existing = shell_key or env_key
+
+    # Source attribution: shell env wins at runtime (it overrides .env when
+    # the agent boots via python-dotenv), so honour that precedence here too.
+    if shell_key:
+        existing = shell_key
+        source = "shell environment"
+        hint = (
+            "Your shell has this variable exported (likely from your profile "
+            "or a parent process). It will override any value in .env."
+        )
+    elif env_key:
+        existing = env_key
+        source = "the .env file in this workspace"
+        hint = ""
+    else:
+        existing = None
+        source = ""
+        hint = ""
 
     if existing and not force:
-        # Non-interactive or quickstart: reuse silently.
+        preview = _mask_key(existing)
+        # Non-interactive or quickstart: still announce the source + preview.
         if non_interactive or quickstart:
-            console.print(f"  [dim]reusing existing {info['key_env']} from shell/.env[/]")
+            console.print(
+                f"  [dim]reusing {info['key_env']} [cyan]{preview}[/] "
+                f"from {source}[/]"
+            )
             return existing
+
+        console.print(f"  found {info['key_env']}  [cyan]{preview}[/]  [dim](from {source})[/]")
+        if hint:
+            console.print(f"  [dim]{hint}[/]")
         try:
             use_existing = _ask(
                 questionary.confirm,
-                f"Found an existing {info['key_env']}. Use it?",
+                "Use this key?",
                 default=True,
             )
         except _Cancelled:
@@ -432,8 +477,20 @@ def _resolve_api_key(
         if use_existing:
             console.print("  [green]reusing existing key.[/]")
             return existing
-        # Clear transition so the user sees the flow moved on.
-        console.print("  [dim]ok — enter a new key.[/]\n")
+        # User said No. Warn them about shell-env precedence before taking a new key.
+        if shell_key:
+            console.print(
+                "  [yellow]note:[/] your shell env has "
+                f"[cyan]{info['key_env']}[/] exported. Any new key you paste "
+                "will be written to [cyan].env[/], but the shell env will "
+                "still take precedence until you unset it."
+            )
+            console.print(
+                f"    to unset:  [cyan]unset {info['key_env']}[/]  "
+                f"(bash/zsh)  or  [cyan]Remove-Item Env:{info['key_env']}[/]  (PowerShell)\n"
+            )
+        else:
+            console.print("  [dim]ok — enter a new key.[/]\n")
 
     if non_interactive:
         console.print(f"[red]no {info['key_env']} provided (required for --non-interactive)[/]")
